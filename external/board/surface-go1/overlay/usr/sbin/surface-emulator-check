@@ -1,0 +1,33 @@
+#!/bin/sh
+# Real compiled core plus our original test cartridge; no commercial game data.
+set -eu
+test -f /etc/surface-image-id || { echo 'Emulator acceptance requires the booted Surface OS'; exit 2; }
+awk '$2=="/data" {found=1} END {exit !found}' /proc/mounts || exit 2
+test_root=/data/emulator-acceptance
+mkdir -p "$test_root/bios"
+for engine in fceumm snes9x gambatte mgba genesis_plus_gx pcsx_rearmed mupen64plus_next melondsds flycast ppsspp; do
+    timeout 20 /usr/bin/surface-emulator --probe-core --core "/usr/lib/libretro/${engine}_libretro.so"
+done
+timeout 20 /usr/bin/dolphin-emu-nogui --help > "$test_root/dolphin-help.log" 2>&1
+test -s "$test_root/dolphin-help.log"
+echo SURFACE_ALL_EMULATOR_RUNTIMES_PASS
+core=/usr/lib/libretro/fceumm_libretro.so
+rom=/usr/share/surface-tests/input.nes
+run() {
+    SDL_VIDEO_DRIVER=dummy /usr/bin/surface-emulator --core "$core" --rom "$rom" \
+        --system-dir "$test_root/bios" --save-dir "$test_root/$1" \
+        --windowed --no-audio --frames 90 --screenshot "$test_root/$1.bmp" ${2:-}
+}
+run baseline
+run input --test-input
+if cmp -s "$test_root/baseline.bmp" "$test_root/input.bmp"; then
+    echo SURFACE_EMULATOR_INPUT_FAIL; exit 1
+fi
+cp "$test_root/input.bmp" "$test_root/input-before-reload.bmp"
+save=$(find "$test_root/input" -name save.srm | head -n 1)
+test -n "$save"
+cp "$save" "$test_root/input-before-reload.srm"
+run input
+cmp "$test_root/input-before-reload.bmp" "$test_root/input.bmp"
+cmp "$test_root/input-before-reload.srm" "$save"
+echo SURFACE_EMULATOR_HOMEBREW_PASS

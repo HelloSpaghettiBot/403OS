@@ -1,0 +1,25 @@
+From: Surface Go Gaming OS
+Subject: [PATCH] Define openat2 for older x86-64 toolchain headers
+
+Bootlin's Linux 5.4 headers do not define __NR_openat2. With assume_kernel
+set to the shipped Linux 6.12 kernel, safe_openat's fallback is omitted,
+so its compile-time ENOSYS stub makes every sandbox bind fail. Supply the
+stable native x86-64 syscall number, as utils.c already does for
+mount_setattr. Keep RESOLVE_IN_ROOT and RESOLVE_NO_MAGICLINKS unchanged.
+
+--- a/safe_openat.c
++++ b/safe_openat.c
+@@ -27,6 +27,13 @@
+ #include <errno.h>
+ #include <stdint.h>
++
++/* Toolchain headers can predate the kernel selected at configure time. */
++#ifndef __NR_openat2
++# if defined(__x86_64__) && defined(__LP64__)
++#  define __NR_openat2 437
++# endif
++#endif
+ #ifndef __set_errno
+ #define __set_errno(val) ((errno) = (val))
+ #endif
+ 

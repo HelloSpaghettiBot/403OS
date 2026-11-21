@@ -1,0 +1,12 @@
+{
+  "schema": "surface-full-usb-flash-v1",
+  "status": "EXAMPLE_NOT_READY",
+  "device": "/dev/disk/by-id/usb-EXAMPLE_REPLACE_WITH_REVIEWED_STABLE_ID-0:0",
+  "expected": {
+    "model": "EXAMPLE USB",
+    "serial": "EXAMPLE-USB-0001",
+    "bytes": 274877906944
+  },
+  "image": "/run/media/system/Files/Projects/SurfaceGoGamingOS/output/images/surface-go.img",
+  "image_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

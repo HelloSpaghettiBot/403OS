@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+test -f /etc/surface-image-id || { echo 'Browser launcher requires the booted OS image' >&2; exit 1; }
+umask 077
+export HOME=/data/browser
+export XDG_CACHE_HOME=/data/browser/cache
+export XDG_CONFIG_HOME=/data/browser/config
+export XDG_DATA_HOME=/data/browser/share
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+export COG_PLATFORM_NAME=wl
+exec /usr/bin/dbus-run-session -- /usr/bin/cog --platform=wl "${1:-https://www.google.com/}"

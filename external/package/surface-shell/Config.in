@@ -1,0 +1,4 @@
+config BR2_PACKAGE_SURFACE_SHELL
+    bool "Surface HOME shell"
+    depends on BR2_INSTALL_LIBSTDCPP
+    select BR2_PACKAGE_SURFACE_SDL3

@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+if [ ! -f /etc/surface-image-id ] || ! grep -q '^surface-go-' /etc/surface-image-id; then
+    printf '%s\n' 'DW3 runs only inside the Surface OS image.' >&2
+    exit 1
+fi
+if ! awk '$2 == "/data" { found=1 } END { exit !found }' /proc/mounts; then
+    printf '%s\n' 'Persistent DATA is not mounted.' >&2
+    exit 1
+fi
+if [ ! -x /usr/bin/surface-windows-runner ]; then
+    printf '%s\n' 'The Windows application runner is not installed in this image.' >&2
+    exit 1
+fi
+# The runner drops to gaming UID/GID 1000 before opening application state or
+# executing Wine. Wine and optional Proton have separate persistent prefixes.
+exec /usr/bin/surface-windows-runner --launch-dw3 --runner wine

@@ -1,0 +1,19 @@
+config BR2_PACKAGE_SURFACE_UMU
+    bool "UMU Proton launcher"
+    depends on BR2_x86_64
+    depends on BR2_TOOLCHAIN_USES_GLIBC
+    depends on BR2_USE_MMU
+    select BR2_PACKAGE_BUSYBOX_SHOW_OTHERS
+    select BR2_PACKAGE_PYTHON3
+    select BR2_PACKAGE_PYTHON3_SSL
+    select BR2_PACKAGE_PYTHON3_ZLIB
+    select BR2_PACKAGE_PYTHON3_PYEXPAT
+    select BR2_PACKAGE_PYTHON3_BZIP2
+    select BR2_PACKAGE_PYTHON3_XZ
+    select BR2_PACKAGE_BASH
+    select BR2_PACKAGE_CA_CERTIFICATES
+    help
+      The official checksum-pinned UMU launcher and vendored Python modules.
+      Proton and its Steam Linux Runtime are fetched only through explicit
+      first-run setup into private writable storage, never at boot.
+      This package does not establish Windows game compatibility.

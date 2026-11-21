@@ -1,0 +1,33 @@
+config BR2_PACKAGE_SURFACE_MOONLIGHT
+	bool "Surface Moonlight Embedded (Wayland/SDL2)"
+	depends on BR2_x86_64
+	depends on BR2_USE_MMU
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on !BR2_STATIC_LIBS
+	depends on BR2_PACKAGE_HAS_UDEV
+	depends on BR2_PACKAGE_HAS_LIBEGL
+	depends on BR2_PACKAGE_HAS_LIBGLES
+	depends on BR2_PACKAGE_WAYLAND
+	select BR2_PACKAGE_ALSA_LIB
+	select BR2_PACKAGE_AVAHI
+	select BR2_PACKAGE_AVAHI_DAEMON
+	select BR2_PACKAGE_DBUS
+	select BR2_PACKAGE_EXPAT
+	select BR2_PACKAGE_FFMPEG
+	select BR2_PACKAGE_LIBCURL
+	select BR2_PACKAGE_LIBCURL_OPENSSL
+	select BR2_PACKAGE_LIBEVDEV
+	select BR2_PACKAGE_OPENSSL
+	select BR2_PACKAGE_OPUS
+	select BR2_PACKAGE_SDL2
+	select BR2_PACKAGE_SDL2_OPENGLES
+	select BR2_PACKAGE_SDL2_WAYLAND
+	select BR2_PACKAGE_UTIL_LINUX
+	select BR2_PACKAGE_UTIL_LINUX_LIBUUID
+	help
+	  Pinned upstream Moonlight Embedded client with its SDL2 Wayland
+	  frontend, FFmpeg software video decoding, Opus audio, and gamepad
+	  input. Hardware accelerated decoding remains unverified.
+	  Pairing requires an authorized Sunshine/GameStream PC.
+
+	  https://github.com/moonlight-stream/moonlight-embedded

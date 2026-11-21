@@ -1,0 +1,5 @@
+# Official LLVM release SHA256 digest, also present in GitHub release attestation.
+sha256  df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384  LLVM-22.1.8-Linux-X64.tar.xz
+# Source and license hashes from Buildroot's LLVM 22.1.8 package.
+sha256  922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888  llvm-project-22.1.8.src.tar.xz
+sha256  8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee  LICENSE.TXT

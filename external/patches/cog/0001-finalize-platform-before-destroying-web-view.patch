@@ -1,0 +1,37 @@
+From: Surface Go Gaming OS
+Subject: [PATCH] Finalize the platform while its WebKit backend is alive
+
+Cog 0.18.5 destroys the shell and WebKitWebViewBackend before finalizing
+the Wayland platform. The backend destroy notifier has then freed the FDO
+exportable which platform finalization still uses to release the displayed
+image. Finalize the platform first, with the shell/backend still alive.
+
+This is the lifetime-order correction reported in upstream issue 744, not
+a replacement quit path or a change to crash status handling.
+Upstream: https://github.com/Igalia/cog/issues/744
+
+--- a/launcher/cog-launcher.c
++++ b/launcher/cog-launcher.c
+@@ -457,6 +457,13 @@
+ {
+     CogLauncher *launcher = COG_LAUNCHER(object);
+ 
++    /* The platform releases images through the shell's WebKit backend.
++     * Its destroy notifier must not run until that cleanup is complete.
++     */
++    CogPlatform *platform = cog_platform_get_default();
++    if (platform)
++        g_object_unref(platform);
++
+     if (launcher->shell) {
+         g_signal_handlers_disconnect_by_func(launcher->shell, G_CALLBACK(on_notify_web_view), NULL);
+         g_signal_handlers_disconnect_by_func(launcher->shell, G_CALLBACK(cog_launcher_create_view), NULL);
+@@ -479,8 +486,6 @@
+     g_clear_pointer(&launcher->net_mem_settings, webkit_memory_pressure_settings_free);
+ #endif /* COG_HAVE_MEM_PRESSURE */
+ 
+-    g_object_unref(cog_platform_get_default());
+-
+     G_OBJECT_CLASS(cog_launcher_parent_class)->dispose(object);
+ }
+ 

@@ -1,0 +1,14 @@
+config BR2_PACKAGE_SURFACE_SDL3
+    bool "Surface SDL3 (Wayland/EGL foundation)"
+    depends on BR2_INSTALL_LIBSTDCPP
+    depends on BR2_TOOLCHAIN_HAS_THREADS
+    depends on BR2_USE_WCHAR
+    depends on !BR2_STATIC_LIBS
+    depends on !BR2_PACKAGE_SDL3
+    select BR2_PACKAGE_WAYLAND
+    select BR2_PACKAGE_WAYLAND_PROTOCOLS
+    select BR2_PACKAGE_LIBXKBCOMMON
+    help
+      Pinned SDL3 3.4.20 with Wayland and EGL/GLES presentation.
+      The first profile uses Mesa softpipe, with no claim of Intel
+      hardware acceleration. Do not enable alongside upstream SDL3.

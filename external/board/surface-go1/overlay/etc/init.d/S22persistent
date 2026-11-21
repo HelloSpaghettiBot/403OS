@@ -1,0 +1,38 @@
+#!/bin/sh
+# Persistent controller identity, emulator resources, and last device settings.
+case "$1" in
+start)
+    grep -q ' /data ext4 ' /proc/mounts || exit 0
+    mkdir -p /data/logs /data/config /data/cache /data/share /data/saves /data/bios /data/home /data/bluetooth /data/moonlight/keys /var/lib/bluetooth
+    chmod 700 /data/home /data/config /data/cache /data/share /data/bluetooth /data/moonlight /data/moonlight/keys
+    if ! test -L /data/windows; then
+        mkdir -p /data/windows /run/surface-games
+        chown 1000:1000 /data/windows /run/surface-games
+        chmod 700 /data/windows /run/surface-games
+    fi
+    mount -o bind /data/bluetooth /var/lib/bluetooth || exit 1
+    if test -d /usr/share/surface/system/PPSSPP && ! test -e /data/bios/PPSSPP; then
+        ln -s /usr/share/surface/system/PPSSPP /data/bios/PPSSPP
+    fi
+    if command -v alsactl >/dev/null; then
+        if test -s /data/home/asound.state; then
+            timeout 10 alsactl -f /data/home/asound.state restore >> /data/logs/device-settings.log 2>&1 || true
+        elif timeout 10 alsactl init >> /data/logs/device-settings.log 2>&1; then
+            # Kernel mixer defaults can be muted. Initialize once, then keep
+            # the owner's saved levels on subsequent boots.
+            (umask 077; timeout 3 alsactl -f /data/home/asound.state store) >> /data/logs/device-settings.log 2>&1 || true
+        fi
+    fi
+    if test -s /data/home/brightness; then
+        device=$(sed -n '1p' /data/home/brightness)
+        value=$(sed -n '2p' /data/home/brightness)
+        case "$device" in ''|*[!a-zA-Z0-9_-]*) device= ;; esac
+        case "$value" in ''|*[!0-9]*) value= ;; esac
+        if test -n "$device" && test -n "$value" && test -w "/sys/class/backlight/$device/brightness"; then
+            maximum=$(cat "/sys/class/backlight/$device/max_brightness")
+            test "$value" -le "$maximum" && printf '%s\n' "$value" > "/sys/class/backlight/$device/brightness"
+        fi
+    fi
+    ;;
+esac
+exit 0

@@ -1,0 +1,80 @@
+#!/bin/sh
+# Optional, explicitly attached read-only user library. No ROMs in the OS image.
+test -f /etc/surface-image-id || exit 0
+case "$1" in
+    start)
+        # DATA must really be mounted before creating logs; never fall back to
+        # the root filesystem when DATA failed to mount on a pristine image.
+        python3 - <<'PY' || exit 1
+import os
+import stat
+
+if os.geteuid() != 0:
+    raise SystemExit('Library initialization requires the image system service')
+marker = os.open('/etc/surface-image-id', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+try:
+    info = os.fstat(marker)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not 0 < info.st_size <= 128:
+        raise SystemExit('Invalid Surface image marker')
+    if not os.read(marker, 129).startswith(b'surface-go-'):
+        raise SystemExit('Invalid Surface image identity')
+finally:
+    os.close(marker)
+data = os.open('/data', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    info = os.fstat(data)
+    devnum = f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
+    mounted = False
+    with open('/proc/self/mountinfo') as inventory:
+        for line in inventory:
+            fields = line.split()
+            if len(fields) < 10 or fields[4] != '/data' or '-' not in fields:
+                continue
+            split = fields.index('-')
+            if split + 1 < len(fields) and fields[split + 1] == 'ext4' and fields[2] == devnum and 'rw' in fields[5].split(','):
+                mounted = True
+    if not mounted:
+        raise SystemExit('Library initialization requires the mounted writable DATA filesystem')
+    try:
+        os.mkdir('logs', 0o700, dir_fd=data)
+    except FileExistsError:
+        pass
+    logs = os.open('logs', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=data)
+    try:
+        info = os.fstat(logs)
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise SystemExit('The DATA log directory must belong to the image service')
+        os.fchmod(logs, 0o700)
+    finally:
+        os.close(logs)
+finally:
+    os.close(data)
+PY
+        # Optional acceptance inputs exist only on an explicitly configured VM.
+        # Check DMI before creating a directory or mounting any test share.
+        if test "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" = 'Surface Go OS Disposable Test VM' &&
+           grep -qx surface_test_options /sys/bus/virtio/drivers/9pnet_virtio/virtio*/mount_tag 2>/dev/null; then
+            mkdir -p /run/surface-test-options
+            mount -t 9p -o trans=virtio,version=9p2000.L,ro,nosuid,nodev,noexec,msize=262144 surface_test_options /run/surface-test-options || exit 1
+            echo 'SURFACE_TEST_OPTIONS_MOUNT_PASS' > /dev/ttyS0
+        fi
+        mkdir -p /library/roms /library/index
+        mkdir -p /media/library
+        if ! grep -q ' /media/library tmpfs ' /proc/mounts; then
+            mount -t tmpfs -o size=1m,mode=0755,nosuid,nodev,noexec tmpfs /media/library || exit 1
+        fi
+        /usr/bin/surface-library-volumes --mount-readonly > /data/logs/library-volumes.json 2>&1 || true
+        if grep -q surface_games /sys/bus/virtio/drivers/9pnet_virtio/virtio*/mount_tag 2>/dev/null; then
+            mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 surface_games /library/roms || exit 1
+            mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 surface_index /library/index || exit 1
+            echo 'SURFACE_LIBRARY_MOUNT_PASS' > /dev/ttyS0
+        fi
+        ;;
+    stop)
+        if test "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" = 'Surface Go OS Disposable Test VM' &&
+           grep -q '^surface_test_options /run/surface-test-options 9p ' /proc/mounts; then
+            umount /run/surface-test-options 2>/dev/null
+        fi
+        umount /library/index 2>/dev/null; umount /library/roms 2>/dev/null ;;
+esac
+exit 0

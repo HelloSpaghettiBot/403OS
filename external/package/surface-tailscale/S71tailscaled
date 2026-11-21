@@ -1,0 +1,37 @@
+#!/bin/sh
+# Enrollment is always interactive. A boot never runs `tailscale up`.
+DAEMON=/usr/sbin/tailscaled
+PIDFILE=/run/tailscale/tailscaled.pid
+
+case "$1" in
+start)
+    [ -x "$DAEMON" ] || exit 0
+    if grep -q 'surface.vm-install=1' /proc/cmdline; then exit 0; fi
+    grep -qs ' /data ' /proc/mounts || { echo 'Tailscale: persistent /data is not mounted'; exit 1; }
+    umask 077
+    mkdir -p /data/tailscale /run/tailscale /data/logs
+    chmod 0700 /data/tailscale /run/tailscale
+    if [ ! -c /dev/net/tun ]; then
+        echo 'Tailscale: kernel TUN device is unavailable'
+        exit 1
+    fi
+    # The daemon can exist before its local API socket. Repeated start requests
+    # during that interval must leave it running and return success.
+    start-stop-daemon -S -o -q -b -m -p "$PIDFILE" -x "$DAEMON" \
+        -O /data/logs/tailscaled.log -- \
+        --state=/data/tailscale/tailscaled.state --statedir=/data/tailscale \
+        --socket=/run/tailscale/tailscaled.sock --port=41641
+    ;;
+stop)
+    start-stop-daemon -K -q -p "$PIDFILE" -x "$DAEMON"
+    rm -f "$PIDFILE" /run/tailscale/tailscaled.sock
+    ;;
+restart)
+    "$0" stop
+    "$0" start
+    ;;
+*)
+    echo "Usage: $0 {start|stop|restart}" >&2
+    exit 1
+    ;;
+esac

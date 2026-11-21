@@ -1,0 +1,2 @@
+# Bound emulator acceptance commands without adding a second coreutils package.
+CONFIG_TIMEOUT=y

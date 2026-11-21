@@ -1,0 +1,15 @@
+# Merge when integrating the explicit first-run PokeMMO setup service.
+# The pinned headful Java runtime is fetched on explicit setup, not shipped
+# as a proprietary client dependency or compiled during the OS build.
+BR2_PACKAGE_PYTHON3=y
+BR2_PACKAGE_PYTHON3_SSL=y
+BR2_PACKAGE_PYTHON3_ZLIB=y
+BR2_PACKAGE_FONTCONFIG=y
+BR2_PACKAGE_DEJAVU=y
+BR2_PACKAGE_XORG7=y
+BR2_PACKAGE_XLIB_LIBX11=y
+BR2_PACKAGE_XLIB_LIBXEXT=y
+BR2_PACKAGE_XLIB_LIBXI=y
+BR2_PACKAGE_XLIB_LIBXRENDER=y
+BR2_PACKAGE_XLIB_LIBXTST=y
+# Weston Xwayland + Mesa desktop GL are supplied by emulators.fragment.

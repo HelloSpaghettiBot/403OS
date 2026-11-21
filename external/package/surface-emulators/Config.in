@@ -1,0 +1,107 @@
+menu "Surface emulator engines"
+
+depends on BR2_x86_64
+
+depends on BR2_INSTALL_LIBSTDCPP
+
+depends on BR2_TOOLCHAIN_HAS_THREADS
+
+depends on !BR2_STATIC_LIBS
+
+config BR2_PACKAGE_SURFACE_EMULATORS
+    bool "Build every default Surface emulator engine"
+    depends on BR2_PACKAGE_HAS_LIBGLES
+    depends on BR2_PACKAGE_HAS_LIBEGL
+    depends on BR2_PACKAGE_HAS_LIBGL
+    depends on BR2_PACKAGE_HAS_UDEV
+    depends on BR2_PACKAGE_XORG7
+    select BR2_PACKAGE_SURFACE_FCEUMM
+    select BR2_PACKAGE_SURFACE_SNES9X
+    select BR2_PACKAGE_SURFACE_GAMBATTE
+    select BR2_PACKAGE_SURFACE_MGBA
+    select BR2_PACKAGE_SURFACE_GENESIS_PLUS_GX
+    select BR2_PACKAGE_SURFACE_PCSX_REARMED
+    select BR2_PACKAGE_SURFACE_MUPEN64PLUS_NEXT
+    select BR2_PACKAGE_SURFACE_MELONDS_DS
+    select BR2_PACKAGE_SURFACE_FLYCAST
+    select BR2_PACKAGE_SURFACE_PPSSPP
+    select BR2_PACKAGE_SURFACE_DOLPHIN
+    help
+      Native emulator engines for the Surface HOME library. No games,
+      proprietary BIOS, firmware dumps or third-party artwork are included.
+      Actual game execution requires the libretro host or Dolphin frontend.
+
+config BR2_PACKAGE_SURFACE_FCEUMM
+    bool "FCEUmm (NES)"
+
+config BR2_PACKAGE_SURFACE_SNES9X
+    bool "Snes9x (SNES)"
+
+config BR2_PACKAGE_SURFACE_GAMBATTE
+    bool "Gambatte (GB/GBC)"
+
+config BR2_PACKAGE_SURFACE_MGBA
+    bool "mGBA (Game Boy Advance)"
+
+config BR2_PACKAGE_SURFACE_GENESIS_PLUS_GX
+    bool "Genesis Plus GX (Mega Drive/Genesis)"
+
+config BR2_PACKAGE_SURFACE_PCSX_REARMED
+    bool "PCSX ReARMed (PlayStation)"
+
+config BR2_PACKAGE_SURFACE_MUPEN64PLUS_NEXT
+    bool "Mupen64Plus Next (Nintendo 64)"
+    depends on BR2_PACKAGE_HAS_LIBGLES
+
+config BR2_PACKAGE_SURFACE_MELONDS_DS
+    bool "melonDS DS (Nintendo DS)"
+    help
+      Maintained melonDS DS core with x86-64 JIT and threaded software
+      rendering. All upstream CMake FetchContent dependencies are fixed
+      revisions downloaded and hashed before configuration.
+
+config BR2_PACKAGE_SURFACE_FLYCAST
+    bool "Flycast (Dreamcast)"
+    depends on BR2_PACKAGE_HAS_LIBGLES
+    select BR2_PACKAGE_LIBZIP
+    select BR2_PACKAGE_LIBMINIUPNPC
+    help
+      Official Flycast 2.7 libretro core with GLES3 presentation.
+
+config BR2_PACKAGE_SURFACE_PPSSPP
+    bool "PPSSPP (PlayStation Portable)"
+    depends on BR2_PACKAGE_HAS_LIBGLES
+    select BR2_PACKAGE_ZLIB
+    select BR2_PACKAGE_LIBPNG
+    select BR2_PACKAGE_ZSTD
+    select BR2_PACKAGE_FFMPEG
+    select BR2_PACKAGE_FFMPEG_SWSCALE
+    select BR2_PACKAGE_LIBCURL
+    help
+      Official complete PPSSPP 1.20.4 source release, built as a libretro
+      core with GLES and FFmpeg. Its assets are installed separately at
+      /usr/share/surface/system/PPSSPP; the frontend must expose that
+      directory as PPSSPP under its libretro system directory.
+
+config BR2_PACKAGE_SURFACE_DOLPHIN
+    bool "Dolphin standalone (GameCube)"
+    depends on BR2_PACKAGE_HAS_LIBEGL
+    depends on BR2_PACKAGE_HAS_LIBGL
+    depends on BR2_PACKAGE_HAS_UDEV
+    depends on BR2_PACKAGE_XORG7
+    select BR2_PACKAGE_SURFACE_SDL3
+    select BR2_PACKAGE_ALSA_LIB
+    select BR2_PACKAGE_LIBEVDEV
+    select BR2_PACKAGE_LIBUSB
+    select BR2_PACKAGE_LIBCURL
+    select BR2_PACKAGE_BZIP2
+    select BR2_PACKAGE_XLIB_LIBX11
+    select BR2_PACKAGE_XLIB_LIBXI
+    select BR2_PACKAGE_XLIB_LIBXRANDR
+    help
+      Actual standalone dolphin-emu-nogui graphical frontend, with SDL3
+      controllers and ALSA sound. Its X11 window uses Weston Xwayland;
+      upstream NoGUI has no native Wayland window frontend. Requires
+      the desktop GL/EGL profile in emulators.fragment. No Qt is built.
+
+endmenu

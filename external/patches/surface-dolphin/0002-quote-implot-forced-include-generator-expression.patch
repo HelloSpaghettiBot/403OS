@@ -1,0 +1,23 @@
+From: Surface Go Gaming OS
+Subject: [PATCH] Keep implot forced include grouped through warning filtering
+
+CMake splits the unquoted forced-include expression. DolphinDisableWarnings
+also mistakes an absolute /work/... header option for a /W warning option.
+Choose the compiler branch at configure time and keep the non-MSVC include
+pair grouped until CMake generates the compiler command.
+
+--- a/Externals/implot/CMakeLists.txt
++++ b/Externals/implot/CMakeLists.txt
+@@ -23,5 +23,8 @@
+ # https://github.com/epezent/implot/pull/565
+-target_compile_options(implot PRIVATE
+-  $<$<CXX_COMPILER_ID:MSVC>:/FI${CMAKE_CURRENT_SOURCE_DIR}/implot_isnan_fix.h>
+-  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-include ${CMAKE_CURRENT_SOURCE_DIR}/implot_isnan_fix.h>
+-)
++if(MSVC)
++  target_compile_options(implot PRIVATE
++    "/FI${CMAKE_CURRENT_SOURCE_DIR}/implot_isnan_fix.h")
++else()
++  target_compile_options(implot PRIVATE
++    "SHELL:-include \"${CMAKE_CURRENT_SOURCE_DIR}/implot_isnan_fix.h\"")
++endif()

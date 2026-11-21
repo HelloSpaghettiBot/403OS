@@ -1,0 +1,49 @@
+#!/bin/sh
+set -u
+export XDG_RUNTIME_DIR=/run/surface
+export WAYLAND_DISPLAY=wayland-0
+export DISPLAY=:0
+export SDL_VIDEO_DRIVER=wayland
+export SDL_VIDEODRIVER=wayland
+export SDL_GAMECONTROLLERCONFIG_FILE=/data/config/gamecontrollerdb.txt
+export LIBSEAT_BACKEND=builtin
+export HOME=/data/home
+export XDG_CONFIG_HOME=/data/config
+export XDG_CACHE_HOME=/data/cache
+export XDG_DATA_HOME=/data/share
+export SURFACE_LIBRARY=/data/library/catalog.tsv
+if test -f /library/index/catalog.tsv; then export SURFACE_LIBRARY=/library/index/catalog.tsv; fi
+graphics=pixman
+for driver in /sys/class/drm/card*/device/driver; do
+    if test "$(basename "$(readlink -f "$driver")")" = i915; then graphics=gl;export LIBVA_DRIVER_NAME=iHD;fi
+done
+# Xwayland binds its Unix socket before Weston finishes starting.
+test ! -L /tmp/.X11-unix || exit 1
+mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix || exit 1
+chvt 1
+weston --backend=drm --renderer="$graphics" --xwayland --socket=wayland-0 --log=/data/logs/weston.log &
+compositor=$!
+trap 'kill "$compositor" 2>/dev/null; exit 0' TERM INT
+attempt=0
+while test ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; do
+    kill -0 "$compositor" 2>/dev/null || exit 1
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 100 || exit 1
+    sleep .1
+done
+if test "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" = 'Surface Go OS Disposable Test VM'; then
+    /usr/sbin/surface-app-check > /dev/ttyS0 2>&1 || echo 'SURFACE_APP_CHECK_FAILURE' > /dev/ttyS0
+fi
+failures=0
+while kill -0 "$compositor" 2>/dev/null; do
+    start=$(date +%s)
+    /usr/bin/surface-shell > /dev/ttyS0 2>&1
+    result=$?
+    duration=$(( $(date +%s) - start ))
+    echo "shell exited status=$result duration=$duration"
+    if test "$duration" -lt 10; then failures=$((failures + 1)); else failures=0; fi
+    # Rate-limited recovery: no rapid persistent crash loop.
+    test "$failures" -lt 5 || { echo 'Shell crash budget exhausted'; break; }
+    sleep 2
+done
+kill "$compositor" 2>/dev/null

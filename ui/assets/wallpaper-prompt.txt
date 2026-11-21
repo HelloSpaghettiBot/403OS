@@ -1,0 +1,9 @@
+Method: Built-in image_gen.imagegen, opaque original generation, 2026-11-19.
+No reference image was passed to the tool; the owner's interface screenshot informed the written direction. Original output preserved at /home/Luls/.codex/generated_images/01a1f6bd-e15a-76f3-bcd2-dd43d88d0e56/exec-c6b99c66-f7aa-4eeb-bf13-47cadfd41dba.png
+
+Final prompt:
+Use case: photorealistic-natural
+Asset type: 16:9 wallpaper for a premium handheld gaming operating system.
+Primary request: Create an original cinematic mountain-at-dusk landscape with no interface elements. A majestic isolated volcanic mountain rises in the upper center, its rocky snow-flecked ridge catching subtle warm coral sunset light. Deep navy and violet twilight sky with soft burgundy and reddish cloud streaks. Near the horizon, a restrained thin amber-red sunset glow. Black conifer forest silhouettes run across the lower third, uneven tall pines at the far left and right, with a dark unobtrusive foreground. Sophisticated natural photography with a subtly cinematic grade, rich atmospheric depth, finely detailed ridges and trees, restrained dark exposure so bright UI can be overlaid legibly. Composition/framing: wide landscape 16:9, mountain peak around horizontal center and upper quarter, plenty of smooth dark sky in the top strip and almost-black lower quarter.
+Color palette: midnight navy, muted violet, black-blue, subtle crimson and coral-orange highlights.
+Constraints: landscape wallpaper only. No text, no icons, no UI, no game characters, no cards, no logos, no watermarks, no buildings, no people. Original scenic artwork.

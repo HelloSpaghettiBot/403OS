@@ -1,0 +1,15 @@
+#!/bin/sh
+# Serial evidence stays off the graphical VT; no desktop or graphical getty.
+case "$1" in
+start)
+    grep -q ' /data ext4 ' /proc/mounts || { echo 'Data filesystem unavailable' > /dev/ttyS0; exit 1; }
+    mkdir -p /run/surface /data/logs /data/config
+    chmod 700 /run/surface
+    /usr/sbin/surface-session >> /data/logs/session.log 2>&1 &
+    echo $! > /run/surface-session.pid
+    ;;
+stop)
+    test ! -f /run/surface-session.pid || kill "$(cat /run/surface-session.pid)"
+    ;;
+restart) "$0" stop; "$0" start ;;
+esac

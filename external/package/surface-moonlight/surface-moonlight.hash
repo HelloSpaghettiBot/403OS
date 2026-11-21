@@ -1,0 +1,8 @@
+# Matches SHA256 digest published on the upstream v2.7.1 GitHub release asset.
+sha256  bacbccd15ac01708f35da553eb1bcdccbc887545a6cf2bfcea3e87031dc7276c  moonlight-embedded-2.7.1.tar.xz
+# License file hashes computed from the verified upstream release archive.
+sha256  8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903  LICENSE
+sha256  589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2  third_party/moonlight-common-c/LICENSE.txt
+sha256  6095e9ffa777dd22839f7801aa845b31c9ed07f3d6bf8a26dc5d2dec8ccc0ef3  third_party/h264bitstream/LICENSE
+sha256  77f94e3be39938801163844b8bf9a4f12badcc0da136e9886e7da14a816d74d3  third_party/moonlight-common-c/enet/LICENSE
+sha256  97f35b302b361680ec1e891e95d2d52097bb95abff361434916d99dc1305f127  third_party/SDL_GameControllerDB/LICENSE

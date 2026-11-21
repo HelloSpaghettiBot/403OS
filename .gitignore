@@ -1,0 +1,7 @@
+/buildroot/
+/output/
+/artifacts/
+/build/
+__pycache__/
+*.pyc
+.wget-hsts

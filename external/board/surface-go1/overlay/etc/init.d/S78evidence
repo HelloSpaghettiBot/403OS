@@ -1,0 +1,20 @@
+#!/bin/sh
+case "$1" in
+start)
+    # Automatic acceptance belongs only to the disposable VM. Physical boots
+    # launch HOME directly; diagnostics must not run emulators in the background.
+    test -f /etc/surface-image-id || exit 0
+    test "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" = 'Surface Go OS Disposable Test VM' || exit 0
+    grep -q 'surface.vm-install=1' /proc/cmdline && exit 0
+    (
+        test ! -d /sys/firmware/efi || echo 'SURFACE_EFI_PASS'
+        echo 'SURFACE_ROOT_MOUNTS_BEGIN'
+        cat /proc/mounts
+        echo 'SURFACE_ROOT_MOUNTS_END'
+        if pidof bluetoothd >/dev/null; then echo 'SURFACE_BLUETOOTH_SERVICE_PASS'; else echo 'SURFACE_BLUETOOTH_SERVICE_FAIL'; fi
+        SDL_VIDEO_DRIVER=dummy /usr/bin/surface-shell --self-test
+        if test -x /usr/bin/surface-emulator; then /usr/sbin/surface-emulator-check; fi
+        if curl -fsS --max-time 20 -o /dev/null https://buildroot.org/; then echo 'SURFACE_HTTPS_PASS'; else echo 'SURFACE_HTTPS_FAIL'; fi
+    ) > /dev/ttyS0 2>&1 &
+    ;;
+esac

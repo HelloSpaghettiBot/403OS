@@ -1,0 +1,10 @@
+#!/bin/sh
+case "$1" in
+start)
+    if grep -q 'surface.vm-install=1' /proc/cmdline; then
+        /usr/sbin/surface-install-vm --confirm-disposable-vm > /dev/ttyS0 2>&1
+        # Never continue to HOME after a failed installation.
+        poweroff
+    fi
+    ;;
+esac

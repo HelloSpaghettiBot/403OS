@@ -1,0 +1,221 @@
+From: Surface Go Gaming OS
+Subject: [PATCH] Default first SDL gamepad with keyboard fallback and preserve profiles
+
+Upstream SDLGamepad names and the bundled SDL Gamepad profile are used
+verbatim. Select the real ciface qualifier, not SDL instance IDs. Publish
+new defaults without replacing any existing configuration.
+
+--- a/Source/Core/Core/HW/GCPadEmu.cpp
++++ b/Source/Core/Core/HW/GCPadEmu.cpp
+@@ -16,6 +16,8 @@
+ #include "InputCommon/ControllerEmu/ControlGroup/MixedTriggers.h"
+ #include "InputCommon/ControllerEmu/StickGate.h"
+ #include "InputCommon/GCPadStatus.h"
++#include "InputCommon/ControllerInterface/ControllerInterface.h"
++#include "InputCommon/ControllerInterface/MappingCommon.h"
+ 
+ static const u16 button_bitmasks[] = {
+     PAD_BUTTON_A,
+@@ -189,6 +191,7 @@
+ 
+ void GCPad::LoadDefaults(const ControllerInterface& ciface)
+ {
++  const auto state_lock = GetStateLock();
+   EmulatedController::LoadDefaults(ciface);
+ 
+ #ifdef ANDROID
+@@ -258,6 +261,74 @@
+   // Triggers
+   m_triggers->SetControlExpression(0, "`Q`");  // L
+   m_triggers->SetControlExpression(1, "`W`");  // R
++
++#ifdef __linux__
++  // Surface: use Dolphin's actual ciface qualifier, never an SDL instance ID.
++  // Names follow the upstream SDL Gamepad profile and SDLGamepad backend.
++  ciface::Core::DeviceQualifier keyboard;
++  for (const auto& device : ciface.GetAllDevices())
++  {
++    if (device->GetSource() == "XInput2" && device->FindInput("Escape"))
++    {
++      keyboard.FromDevice(device.get());
++      break;
++    }
++  }
++  for (const auto& device : ciface.GetAllDevices())
++  {
++    if (device->GetSource() != "SDL" || !device->FindInput("Button A") ||
++        !device->FindInput("Left X+") || !device->FindInput("Left Y+") ||
++        !device->FindInput("Right X+") || !device->FindInput("Right Y+"))
++      continue;
++
++    ciface::Core::DeviceQualifier gamepad;
++    gamepad.FromDevice(device.get());
++    SetDefaultDevice(gamepad);
++    const auto expression = [&](const char* pad, const char* key) {
++      const auto pad_expression = ciface::MappingCommon::GetExpressionForControl(pad, gamepad, gamepad);
++      if (keyboard.source.empty())
++        return pad_expression;
++      return pad_expression + " | " +
++             ciface::MappingCommon::GetExpressionForControl(key, keyboard, gamepad);
++    };
++    const auto keyboard_expression = [&](const char* key) {
++      return keyboard.source.empty() ? std::string{} :
++             ciface::MappingCommon::GetExpressionForControl(key, keyboard, gamepad);
++    };
++
++    const std::array<const char*, 6> buttons = {
++        "Button A", "Button B", "Button X", "Button Y", "Shoulder R", "Start"};
++    const std::array<const char*, 6> button_keys = {"X", "Z", "C", "S", "D", "Return"};
++    for (std::size_t i = 0; i < buttons.size(); ++i)
++      m_buttons->SetControlExpression(i, expression(buttons[i], button_keys[i]));
++
++    const std::array<const char*, 4> main_axes = {"Left Y+", "Left Y-", "Left X-", "Left X+"};
++    const std::array<const char*, 4> main_keys = {"Up", "Down", "Left", "Right"};
++    const std::array<const char*, 4> c_axes = {"Right Y+", "Right Y-", "Right X-", "Right X+"};
++    const std::array<const char*, 4> c_keys = {"I", "K", "J", "L"};
++    const std::array<const char*, 4> pad_buttons = {"Pad N", "Pad S", "Pad W", "Pad E"};
++    const std::array<const char*, 4> pad_keys = {"T", "G", "F", "H"};
++    for (std::size_t i = 0; i < main_axes.size(); ++i)
++    {
++      m_main_stick->SetControlExpression(i, expression(main_axes[i], main_keys[i]));
++      m_c_stick->SetControlExpression(i, expression(c_axes[i], c_keys[i]));
++      m_dpad->SetControlExpression(i, expression(pad_buttons[i], pad_keys[i]));
++    }
++    m_main_stick->SetControlExpression(4, keyboard_expression("Shift"));
++    m_c_stick->SetControlExpression(4, keyboard_expression("Ctrl"));
++    m_main_stick->SetCalibrationFromGate(ControllerEmu::RoundStickGate(1.0));
++    m_c_stick->SetCalibrationFromGate(ControllerEmu::RoundStickGate(1.0));
++    m_triggers->SetControlExpression(0, expression("Trigger L", "Q"));
++    m_triggers->SetControlExpression(1, expression("Trigger R", "W"));
++    m_triggers->SetControlExpression(2, expression("Trigger L", "Q"));
++    m_triggers->SetControlExpression(3, expression("Trigger R", "W"));
++    m_rumble->SetControlExpression(0, "`Motor L` | `Motor R`");
++    m_triforce->SetControlExpression(0, keyboard_expression("1"));
++    m_triforce->SetControlExpression(1, keyboard_expression("2"));
++    m_triforce->SetControlExpression(2, keyboard_expression("3"));
++    break;
++  }
++#endif
+ #endif
+ }
+ 
+--- a/Source/Core/InputCommon/InputConfig.h
++++ b/Source/Core/InputCommon/InputConfig.h
+@@ -58,6 +58,8 @@
+   void GenerateControllerTextures();
+ 
+ private:
++  void SaveSurfaceDefaultsIfAbsent();
++
+   Common::EventHook m_hotplug_event_hook;
+   std::vector<std::unique_ptr<ControllerEmu::EmulatedController>> m_controllers;
+   const std::string m_ini_name;
+--- a/Source/Core/InputCommon/InputConfig.cpp
++++ b/Source/Core/InputCommon/InputConfig.cpp
+@@ -5,6 +5,12 @@
+ 
+ #include <utility>
+ #include <vector>
++
++#ifdef __linux__
++#include <cstdlib>
++#include <fcntl.h>
++#include <unistd.h>
++#endif
+ 
+ #include "Common/FileUtil.h"
+ #include "Common/IniFile.h"
+@@ -114,6 +120,7 @@
+       m_controllers[i]->EmulatedController::LoadDefaults(g_controller_interface);
+       m_controllers[i]->UpdateReferences(g_controller_interface);
+     }
++    SaveSurfaceDefaultsIfAbsent();
+     return false;
+   }
+ }
+@@ -131,6 +138,43 @@
+   }
+ 
+   inifile.Save(ini_filename);
++}
++
++void InputConfig::SaveSurfaceDefaultsIfAbsent()
++{
++#ifdef __linux__
++  if ((m_ini_name != "GCPadNew" && m_ini_name != "Hotkeys") || m_controllers.empty())
++    return;
++  const std::string filename = File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini";
++  if (File::Exists(filename))
++    return;
++  // Keep keyboard-only defaults ephemeral so a later first gamepad can bind
++  // automatically. Once saved, every user profile remains authoritative.
++  if (m_ini_name == "GCPadNew" && m_controllers[0]->GetDefaultDevice().source != "SDL")
++    return;
++
++  Common::IniFile defaults;
++  for (auto& controller : m_controllers)
++    controller->SaveConfig(defaults.GetOrCreateSection(controller->GetName()));
++  std::string pattern = filename + ".surface-XXXXXX";
++  std::vector<char> temporary(pattern.begin(), pattern.end());
++  temporary.push_back('\0');
++  const int fd = ::mkstemp(temporary.data());
++  if (fd < 0)
++    return;
++  ::close(fd);
++  if (defaults.Save(temporary.data()) && ::link(temporary.data(), filename.c_str()) == 0)
++  {
++    // link publishes atomically and fails if a user file/symlink appeared.
++    const int directory = ::open(File::GetUserPath(D_CONFIG_IDX).c_str(), O_RDONLY | O_DIRECTORY);
++    if (directory >= 0)
++    {
++      ::fsync(directory);
++      ::close(directory);
++    }
++  }
++  File::Delete(temporary.data());
++#endif
+ }
+ 
+ ControllerEmu::EmulatedController* InputConfig::GetController(int index) const
+@@ -168,6 +212,17 @@
+   // Update control references on all controllers
+   // as configured devices may have been added or removed.
+   m_hotplug_event_hook = g_controller_interface.RegisterDevicesChangedCallback([this] {
++    const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
++#ifdef __linux__
++    // Support a controller first connected after a keyboard-only launch,
++    // without replacing any existing GCPadNew.ini profile.
++    if (m_ini_name == "GCPadNew" && !m_controllers.empty() &&
++        !File::Exists(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini"))
++    {
++      m_controllers[0]->LoadDefaults(g_controller_interface);
++      SaveSurfaceDefaultsIfAbsent();
++    }
++#endif
+     for (auto& controller : m_controllers)
+       controller->UpdateReferences(g_controller_interface);
+   });
+--- a/Source/Core/Core/HotkeyManager.cpp
++++ b/Source/Core/Core/HotkeyManager.cpp
+@@ -415,6 +415,7 @@
+   set_key_expression(HK_FULLSCREEN, hotkey_string({"Alt", "RETURN"}));
+ #else
+   set_key_expression(HK_STOP, "Escape");
++  set_key_expression(HK_EXIT, "Escape");  // Surface: persistent keyboard return to HOME
+   set_key_expression(HK_FULLSCREEN, hotkey_string({"Alt", "Return"}));
+ #endif
+ #ifdef USE_RETRO_ACHIEVEMENTS
+--- a/Source/Core/InputCommon/ControllerInterface/SDL/SDL.cpp
++++ b/Source/Core/InputCommon/ControllerInterface/SDL/SDL.cpp
+@@ -188,6 +188,11 @@
+       SDL_SetHint(location.key.c_str(), value->c_str());
+   }
+ 
++  // Read the owner's SDL mapping database during SDL_INIT_GAMEPAD. Preserve
++  // an explicit environment or Dolphin SDL_Hints override; never rewrite it.
++  if (SDL_GetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE) == nullptr)
++    SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, "/data/config/gamecontrollerdb.txt");
++
+   m_hotplug_thread = std::thread([this] {
+     Common::SetCurrentThreadName("SDL Hotplug Thread");
+ 

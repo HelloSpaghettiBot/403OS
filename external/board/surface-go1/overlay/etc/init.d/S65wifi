@@ -1,0 +1,19 @@
+#!/bin/sh
+# Reconnect only a previously saved user configuration; never choose an SSID.
+case "$1" in
+start)
+    config=/data/home/wpa_supplicant.conf
+    test -s "$config" || exit 0
+    for device in /sys/class/net/*; do
+        test -d "$device/wireless" || continue
+        interface=${device##*/}
+        ip link set "$interface" up || continue
+        if ! wpa_cli -i "$interface" ping 2>/dev/null | grep -q PONG; then
+            wpa_supplicant -B -i "$interface" -c "$config" -P /run/wpa-surface.pid >> /data/logs/wifi.log 2>&1 || continue
+        fi
+        udhcpc -b -i "$interface" -p /run/udhcpc-surface-wifi.pid >> /data/logs/wifi.log 2>&1
+        break
+    done
+    ;;
+esac
+exit 0

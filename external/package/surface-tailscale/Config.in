@@ -1,0 +1,14 @@
+config BR2_PACKAGE_SURFACE_TAILSCALE
+	bool "Surface Tailscale client and daemon"
+	depends on BR2_x86_64
+	depends on !BR2_PACKAGE_TAILSCALE
+	depends on BR2_USE_WCHAR
+	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_12
+	select BR2_PACKAGE_CA_CERTIFICATES
+	select BR2_PACKAGE_NFTABLES
+	help
+	  Official pinned static x86-64 Tailscale binaries. The daemon starts
+	  with private persistent state in /data/tailscale. Device enrollment
+	  requires the owner's interactive login; no credentials are embedded.
+
+	  https://tailscale.com/

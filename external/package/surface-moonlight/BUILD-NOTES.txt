@@ -1,0 +1,27 @@
+Pinned source: upstream Moonlight Embedded 2.7.1 release asset (2025-11-30).
+https://github.com/moonlight-stream/moonlight-embedded/releases/tag/v2.7.1
+https://github.com/moonlight-stream/moonlight-embedded/wiki/Usage
+
+Installed executable: /usr/bin/moonlight
+This is the actual upstream streaming client. It uses the SDL frontend under
+Weston, and software FFmpeg decoding in the initial Wayland implementation.
+It does not provide Moonlight Qt's host-selection GUI. Surface HOME must provide
+host/pairing controls and launch the commands below with explicit argv arrays.
+
+Runtime environment:
+  SDL_VIDEODRIVER=wayland
+  SDL_RENDER_DRIVER=opengles2
+  WAYLAND_DISPLAY=wayland-0
+  XDG_RUNTIME_DIR=/run/surface
+
+Keep persistent pairing keys in /data/moonlight/keys, private mode0700.
+Examples (HOST is an owner-supplied hostname/IP, never a hardcoded credential):
+  moonlight pair -keydir /data/moonlight/keys HOST
+  moonlight list -keydir /data/moonlight/keys HOST
+  moonlight stream -platform sdl -codec h264 -720 -fps 60 -app Steam -keydir /data/moonlight/keys HOST
+
+No Sunshine host is authorized/configured in this source tree. Pairing, remote
+app listing, audiovisual streaming, latency, hardware decoding and Surface Go
+performance require actual end-to-end tests. Do not mark these as verified from
+a successful package build. Ctrl+Alt+Shift+Q exits an active streaming session;
+upstream also supports Play+Back+LeftShoulder+RightShoulder on a controller.

@@ -1,0 +1,15 @@
+#!/bin/sh
+case "$1" in
+start)
+    # udev creates PARTUUID symlinks in S10, after the initial mount -a.
+    if ! grep -q 'surface.vm-install=1' /proc/cmdline; then
+        mount /data || { echo 'SURFACE_DATA_MOUNT_FAIL' > /dev/ttyS0; exit 1; }
+        count=$(cat /data/boot-count 2>/dev/null || echo 0)
+        case "$count" in ''|*[!0-9]*) count=0 ;; esac
+        count=$((count + 1))
+        printf '%s\n' "$count" > /data/boot-count.new
+        mv /data/boot-count.new /data/boot-count
+        echo "SURFACE_DATA_BOOT_COUNT=$count" > /dev/ttyS0
+    fi
+    ;;
+esac

@@ -1,0 +1,10 @@
+#!/bin/sh
+# pressure-vessel and UMU inspect the host's real glibc loader cache.
+# Generate inside the booted image, never against the build host's libraries.
+set -eu
+case "${1:-}" in
+start)
+    test -f /etc/surface-image-id || exit 2
+    /sbin/ldconfig -f /etc/surface-loader.conf
+    ;;
+esac

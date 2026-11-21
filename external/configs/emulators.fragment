@@ -1,0 +1,13 @@
+# Merge into surface_go1_defconfig before running olddefconfig.
+# All emulator selections are on by default; no game data is distributed.
+BR2_PACKAGE_XORG7=y
+BR2_PACKAGE_MESA3D_OPENGL_GLX=y
+BR2_PACKAGE_LIBEPOXY=y
+BR2_PACKAGE_WESTON_XWAYLAND=y
+# FFmpeg libraries provide PSP movie/audio decoding without its command UI.
+BR2_PACKAGE_FFMPEG=y
+BR2_PACKAGE_FFMPEG_SWSCALE=y
+# BR2_PACKAGE_FFMPEG_FFMPEG is not set
+# BR2_PACKAGE_FFMPEG_FFPLAY is not set
+# BR2_PACKAGE_FFMPEG_FFPROBE is not set
+BR2_PACKAGE_SURFACE_EMULATORS=y

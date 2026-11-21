@@ -1,0 +1,4 @@
+# Locally computed from pinned upstream archive and license files.
+sha256  1e4f9855ff9fac48ead5177e559a9714aad25fa84b45dfa68b518224760abcab  surface-fceumm-77468e568d9fe9c48d684ca911f1a3fe7259fdf7.tar.gz
+sha256  a448d54d15a4a13018d8e2ccb84979d5ad54c5da3fc5dcc20534fa88edd8d311  src/fceu.c
+sha256  fe28515ace99a32bca80ac498040f5e08f4189043ee5fe1b0e1af8eef780c36e  README.md

@@ -1,0 +1,4 @@
+# Official https://pkgs.tailscale.com/stable/tailscale_1.104.7_amd64.tgz.sha256
+sha256  e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c  tailscale_1.104.7_amd64.tgz
+# Pinned upstream v1.104.7 source license, locally computed.
+sha256  a7ca6186a7963a0a60740f6047760eecd7a0234e8c38bd7e1e0bbcb324bda45b  LICENSE

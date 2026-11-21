@@ -1,0 +1,26 @@
+{
+  "schema": "surface-usb-readiness-v1",
+  "image_sha256": "REPLACE_WITH_VALIDATED_IMAGE_SHA256",
+  "live_boot": {
+    "status": "NOT_RUN",
+    "result": "../vm-tests/LIVE-RUN/result.json",
+    "result_sha256": "REPLACE_WITH_RESULT_JSON_SHA256",
+    "command_sha256": "REPLACE_WITH_COMMAND_JSON_SHA256"
+  },
+  "installed_cold_boots": [
+    {
+      "status": "NOT_RUN",
+      "cold_boot": true,
+      "result": "../vm-tests/FIRST-INSTALLED-COLD-BOOT/result.json",
+      "result_sha256": "REPLACE_WITH_RESULT_JSON_SHA256",
+      "command_sha256": "REPLACE_WITH_COMMAND_JSON_SHA256"
+    },
+    {
+      "status": "NOT_RUN",
+      "cold_boot": true,
+      "result": "../vm-tests/SECOND-INSTALLED-COLD-BOOT/result.json",
+      "result_sha256": "REPLACE_WITH_RESULT_JSON_SHA256",
+      "command_sha256": "REPLACE_WITH_COMMAND_JSON_SHA256"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# SHA-256 published by GitHub's official release-asset metadata.
+sha256  eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851  umu-launcher-1.4.4-zipapp.tar
+# Source and license hashes from official checksum-pinned release contents.
+sha256  19767e226b0b937b1dcdcd00282eb31d1a7bb42ee01d54f6dae78e44ab8e3284  1.4.4.tar.gz
+sha256  3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  licenses/umu_launcher-1.4.4.dist-info/licenses/LICENSE
+sha256  3bb6f6bec94b99e2927a8880bf49c401f5e8f48a20ddea96310860264cae20b0  licenses/python_xlib-0.33.dist-info/LICENSE
+sha256  4375ba20e2b9c6c4e7cad2940a628fd90e95cc3d50ee92aae755715d8ba1fbd0  licenses/six-1.17.0.dist-info/LICENSE
+sha256  130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686  licenses/urllib3-2.7.0.dist-info/licenses/LICENSE.txt
+sha256  33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca  licenses/truststore-0.10.4.dist-info/licenses/LICENSE

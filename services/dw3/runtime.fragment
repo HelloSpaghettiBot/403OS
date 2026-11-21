@@ -1,0 +1,7 @@
+# Add source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-wine64/Config.in"
+# to external/Config.in, then merge this fragment with emulators.fragment.
+BR2_PACKAGE_SURFACE_WINE64=y
+BR2_PACKAGE_PYTHON3=y
+BR2_PACKAGE_FONTCONFIG=y
+BR2_PACKAGE_DEJAVU=y
+# XORG7, Mesa desktop GL and Weston Xwayland come from emulators.fragment.

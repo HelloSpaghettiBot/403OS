@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+client=/data/apps/pokemmo/client
+runtime=/data/apps/pokemmo/jre
+if [ ! -r "$client/PokeMMO.sh" ] || [ ! -x "$runtime/bin/java" ]; then
+    printf '%s\n' 'PokeMMO needs first-run setup. Select Install PokeMMO in HOME.' >&2
+    exit 1
+fi
+if [ ! -f /etc/surface-image-id ]; then
+    printf '%s\n' 'This launcher runs only inside the Surface OS image.' >&2
+    exit 1
+fi
+export JAVA_HOME="$runtime"
+export PATH="$JAVA_HOME/bin:$PATH"
+cd "$client"
+exec /bin/sh ./PokeMMO.sh
