@@ -1,90 +1,89 @@
-# VM test report
+# VM validation report
 
-**Self-contained packaging compiled; full live acceptance and display-settings rebuild pending.**
-The outer `surface-go.img` now carries a sparse pristine `surface-go-base.img`
-inside its DATA as `SurfaceGoGamingOS/surface-go.img` plus `.sha256`.
-Checksums for the outer and payload are distinct. Build outputs include
-`SHA256SUMS`, `surface-go-base.img.sha256` and `installer-media.json`.
-The last completed pair, before display-settings changes, is
-6,510,628,864 bytes per image. The build verified the embedded file
-checksum and root-owned 0444 mode; no runtime pass is inferred from that check.
+**Current scope: development validation, not hardware certification.**
+The current self-contained pipeline has build-time payload verification, but
+its complete live/install/display acceptance is pending. A preceding pristine
+image has completed installation and repeated detached UEFI boots.
 
-- Outer SHA-256: `517d91b831a276431b304329e2cc632dac4260198f4cf6ba31df0e80ca08f58c`
-- Pristine payload SHA-256: `9b930ccd1e89288daf7e84302f2ca093731bd6b6baeff513c9f29e2f9f5eceeb`
+## Current self-contained artifacts
 
-The physical finder discovers `/data/SurfaceGoGamingOS/surface-go.img`.
-The new VM installer mounts the serialized outer media's DATA with
-`ro,noload,nosuid,nodev,noexec`, verifies the embedded sidecar/full SHA, clones
-the pristine file and verifies target readback before DATA expansion.
-It refuses a missing payload; it does not fall back to cloning the outer image.
-A live acceptance check also exercises actual source discovery/full hashing.
-The latest visible run,
-[`201812`](../artifacts/vm-tests/20261120-201812-live/result.json), reached
-1800×1200 and passed UEFI/root/SDL injection before failing its wait for the
-expected keyboard action. Visible keyboard interference is a possible cause;
-it has not been proven. Earlier visible runs failed display-size assertions.
-Serial evidence includes guest source discovery/full-payload verification and
-application checks, but the host did not complete remaining live assertions.
-None of these runs is counted as a full media acceptance pass.
+The USB image embeds the pristine base at
+`/data/SurfaceGoGamingOS/surface-go.img` with a checksum sidecar. The installer
+uses source discovery and verifies the file before copying it. The VM path
+mounts serialized media DATA with `ro,noload,nosuid,nodev,noexec`; it does not
+fall back to cloning the outer image when the payload is absent.
 
-A new OS display-settings flow is now being integrated. It uses actual DRM
-mode discovery with a native/preferred choice; Apply restarts compositor/HOME,
-a 45-second trial reverts automatically unless kept, and Keep persists the
-selection. The revised image must test mode listing, apply, Keep, timeout
-rollback, responsive input/layout and reboot persistence. New image hashes,
-complete live/embedded-file installation and USB reflash remain pending.
+The last completed build, before new display settings, produced two
+6,510,628,864-byte artifacts:
 
-The preceding pristine image SHA-256
-`3cdb38b2a39c96b06ba8a08573a08a8898ff0624a4477161d1873d4446da091d`
-has completed this evidence:
+| Artifact | SHA-256 |
+| --- | --- |
+| USB | `517d91b831a276431b304329e2cc632dac4260198f4cf6ba31df0e80ca08f58c` |
+| Pristine base | `9b930ccd1e89288daf7e84302f2ca093731bd6b6baeff513c9f29e2f9f5eceeb` |
 
-| Run | Configuration | Recorded result |
+The build verified the embedded full-file SHA and root-owned mode 0444.
+Guest source discovery/full hashing and application checks have serial
+evidence. Complete host acceptance did not pass: visible runs first captured
+smaller display modes; [201812](../artifacts/vm-tests/20261120-201812-live/result.json)
+confirmed 1800×1200 but timed out on the expected keyboard acknowledgment.
+No complete acceptance pass is inferred from those partial observations.
+
+The new display flow lists actual DRM modes, offers preferred/native,
+restarts compositor/HOME for a 45-second trial, reverts on timeout and persists
+only after Keep. Rebuild, Apply/Keep/rollback and reboot-persistence tests are
+pending; earlier image hashes do not identify that revision.
+
+## Completed baseline
+
+Pristine image SHA-256:
+`3cdb38b2a39c96b06ba8a08573a08a8898ff0624a4477161d1873d4446da091d`.
+
+| Run | Configuration | Result |
 | --- | --- | --- |
-| [174857 install](../artifacts/vm-tests/20261120-174857-install/result.json) | 64 GiB disposable target | PASS: guarded clone, readback, GPT and DATA growth |
-| [175146 boot](../artifacts/vm-tests/20261120-175146-test/result.json) | 4 GiB/four CPUs/1800×1200/virtio | PARTIAL, all implemented checks PASS; DATA count 1 |
-| [175257 boot](../artifacts/vm-tests/20261120-175257-test/result.json) | 3 GiB/two CPUs/1280×800/AHCI | PARTIAL, all implemented checks PASS; count 2; Tailscale persistence PASS |
-| [175359 boot](../artifacts/vm-tests/20261120-175359-test/result.json) | Default profile, same installed disk | PARTIAL, all implemented checks PASS; count 3; Tailscale persistence PASS |
-| [175512 live](../artifacts/vm-tests/20261120-175512-live/result.json) | 4 GiB/four CPUs/1800×1200 | PARTIAL, all implemented live checks PASS |
+| [174857 install](../artifacts/vm-tests/20261120-174857-install/result.json) | 64 GiB disposable disk | PASS: clone/readback/GPT/DATA growth |
+| [175146 boot](../artifacts/vm-tests/20261120-175146-test/result.json) | 4 GiB/four vCPUs/1800×1200/virtio | PARTIAL; implemented checks PASS, DATA count 1 |
+| [175257 boot](../artifacts/vm-tests/20261120-175257-test/result.json) | 3 GiB/two vCPUs/1280×800/AHCI | PARTIAL; implemented checks and persistence PASS, count 2 |
+| [175359 boot](../artifacts/vm-tests/20261120-175359-test/result.json) | Default profile, same disk | PARTIAL; implemented checks and persistence PASS, count 3 |
+| [175512 live](../artifacts/vm-tests/20261120-175512-live/result.json) | 4 GiB/four vCPUs/1800×1200 | PARTIAL; implemented live checks PASS |
 
-The installation grew DATA from 4 GiB to 66,503,815,168 filesystem bytes with
-identity and EFI/root payloads preserved. Provisioning used the guarded
-VM-only direct kernel; all installed boots used UEFI without installer media
-or direct-kernel boot. The installed disk was
-`artifacts/vm-tests/corrected-verified-install.qcow2`. This earlier test path
-predates the outer media's embedded-file cloning and cannot validate it.
+Tests used QEMU 11.1.3/KVM and unsigned OVMF. Provisioning uses the guarded
+VM-only direct kernel; acceptance boots use UEFI, and installed boots detach
+the media. DATA expanded from 4 GiB to 66,503,815,168 filesystem bytes while
+preserving identity and EFI/root payloads. This baseline predates embedded-file
+installation and cannot validate the new media path.
 
-All completed runtime suites cover graphical HOME, root/DATA, framebuffer
-focus changes, virtual keyboard/gamepad/touch injection, DHCP/DNS/HTTPS,
-Bluetooth daemon, Cog rendering/JavaScript/CA-validated HTTPS/Ctrl+W,
-HOME dock launch/global keyboard return, eleven emulator runtime probes,
-MIT NES input/SRAM reload, Wine Windows command exit, Moonlight help/version,
-Tailscale daemon/policy routing, non-silent PCM and UI shutdown.
-Repeat boots retain the same SHA of unenrolled Tailscale state; they do not
-establish enrollment, pairing or streaming.
+Implemented runtime checks cover graphical HOME, mounts, SDL/QMP virtual
+input and framebuffer focus, DHCP/DNS/HTTPS, Bluetooth daemon, Cog render/
+JavaScript/CA-validated HTTPS/Ctrl+W, HOME launch/global return, eleven engine
+probes, legal NES input/SRAM reload, Wine command exit, Moonlight help/version,
+Tailscale runtime/state persistence, non-silent PCM and UI poweroff.
+Tailscale remained unenrolled; no pairing, tailnet or streaming claim follows.
 
-The 175512 live recording contains 42,714 frames at 44,100 Hz, 0.968571 seconds,
-peak 2,987 and 41,803 non-silent frames. Its raw SHA-256 is
+The 175512 recording contains 42,714 frames at 44,100 Hz (0.968571 seconds),
+peak 2,987 and 41,803 non-silent frames. Raw SHA-256:
 `f420cb449e21b14be193554f47bad2947f7620ba1e77ac9af04200c9e973f261`.
-The verifier validates QEMU's unset size-header form without changing bytes.
-This is virtual output, not physical speakers. The live HOME RSS was
-128,012 kB; 3,762,720 kB available RAM includes reclaimable cache and is not
-whole-OS RSS. SDL3 Wayland/GLES2 and Mesa software rendering do not establish
-Intel acceleration.
+QEMU's unset header sizes are validated without changing the recording.
+HOME RSS was 128,012 kB; 3,762,720 kB available RAM includes reclaimable cache,
+not total OS RSS. SDL3 Wayland/GLES2 with Mesa software rendering does not
+establish Intel acceleration or physical audio/input.
 
-The current source passes **210 Python tests** in
-`artifacts/tests/self-contained-python.log`. Five native C++ executables and
-shell syntax checks also pass. Sparse-file/ownership/source guards use fixtures;
-actual new-image results are required separately. Historical failures remain
-in artifacts without rewriting; the current report lists final relevant scope.
+## Reproduce
 
-Interrupted-boot recovery, actual Surface hardware, explicit Proton setup,
-DW3/PokeMMO login/gameplay and enrolled Sunshine/Tailscale streaming remain
-unverified. Boot results are PARTIAL for this scope. No Surface internal erase
-has been authorized.
+```sh
+scripts/vm-create.sh
+scripts/vm-install.sh --disk artifacts/vm-tests/example-installed.qcow2
+scripts/vm-boot-test.sh --disk artifacts/vm-tests/example-installed.qcow2
+scripts/vm-boot-test.sh --disk artifacts/vm-tests/example-installed.qcow2 --memory 3072 --cpus 2 --sata --width 1280 --height 800
+scripts/vm-boot-test.sh --disk artifacts/vm-tests/example-installed.qcow2
+```
 
-The earlier authorized USB flash verified a different, non-self-contained
-73242f image. Its private readback/GPT/power-off receipt does not establish new
-media delivery or physical Surface boot. A new outer image must pass matching
-live/payload checks and verified reflash. Initial source commit `6e4f165` is
-published on [GitHub](https://github.com/HelloSpaghettiBot/403OS); there is no
-binary release, and private images/test artifacts are excluded.
+Use `--visible` for an interactive window and `--ovmf /path/to/OVMF_CODE.fd`
+for a different firmware location. Logs, screenshots, audio, commands and
+results stay under `artifacts/vm-tests/`; they are excluded from source Git.
+A running QEMU process or screenshot alone is not a pass.
+
+The recorded source suite passes 210 Python tests, five native C++ executables
+and shell syntax. Current display tests and full revised-image runs remain
+pending. Physical Surface hardware, interrupted-boot recovery, Proton setup,
+online-game gameplay and enrolled streaming are unverified. See
+[SURFACE_HARDWARE_TESTS.md](SURFACE_HARDWARE_TESTS.md).

@@ -7,6 +7,6 @@
     "serial": "EXAMPLE-USB-0001",
     "bytes": 274877906944
   },
-  "image": "/run/media/system/Files/Projects/SurfaceGoGamingOS/output/images/surface-go.img",
+  "image": "/path/to/403OS/output/images/surface-go.img",
   "image_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
 }

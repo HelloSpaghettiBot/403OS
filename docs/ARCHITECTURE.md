@@ -73,6 +73,6 @@ phrase, verifies source SHA-256 before writable open, rechecks hardware
 identity and mounts, then verifies clone/GPT results. The separate whole-USB
 flasher uses a private stable-identity/checksum plan, completed live-boot
 evidence, exclusive UDisks access and complete image readback. It erases all
-old USB partitions/files under the latest owner authorization and clears the
+old USB partitions/files after explicit target review and clears the
 obsolete physical-end GPT. It cannot substitute for deliberate internal-disk
 confirmation; no Surface internal erase is authorized.
