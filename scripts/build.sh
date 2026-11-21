@@ -36,7 +36,12 @@ fi
 podman "${args[@]}" make -C buildroot O=/work/output BR2_EXTERNAL=/work/external -j10 "${@:-all}" \
     2>&1 | tee "$build_log"
 if [[ -f output/images/surface-go.img ]]; then
-    (cd output/images && sha256sum surface-go.img > SHA256SUMS)
+    (cd output/images &&
+        if [[ -f surface-go-base.img ]]; then
+            sha256sum surface-go.img surface-go-base.img > SHA256SUMS
+        else
+            sha256sum surface-go.img > SHA256SUMS
+        fi)
     podman "${args[@]}" make --no-print-directory -s -C buildroot O=/work/output \
         BR2_EXTERNAL=/work/external show-info > artifacts/build/packages.json
 fi

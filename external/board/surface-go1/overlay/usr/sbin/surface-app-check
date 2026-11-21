@@ -32,6 +32,7 @@ VM_DMI=Path('/sys/class/dmi/id/product_name')
 TEST_OPTIONS=Path('/run/surface-test-options')
 MOUNT_INFO=Path('/proc/self/mountinfo')
 VM_NAME='Surface Go OS Disposable Test VM'
+INSTALLER_PAYLOAD=Path('/data/SurfaceGoGamingOS/surface-go.img')
 
 
 def emit(marker,**fields):
@@ -511,9 +512,44 @@ def audio_check(run):
             'audible_output':'UNVERIFIED: host QEMU audio capture or hardware listening test required'}
 
 
+def installer_check(run):
+    guard()
+    if not INSTALLER_PAYLOAD.exists():
+        emit('SURFACE_INSTALLER_PAYLOAD_NOT_PRESENT',scope='installed_system')
+        return {'status':'PASS','mode':'installed system without USB installer payload'}
+    code,output=command(['/usr/sbin/surface-install-device','--list'],run/'installer-discovery.log',timeout=30)
+    if code!=0:raise RuntimeError('installer could not discover its embedded source')
+    listing=last_event(output)
+    sources=[value for value in listing.get('sources',[]) if value.get('path')==str(INSTALLER_PAYLOAD)]
+    if listing.get('event')!='list' or len(sources)!=1:
+        raise RuntimeError('installer did not discover exactly one embedded DATA source')
+    source=sources[0];size=source.get('bytes');expected=source.get('sha256','')
+    if type(size) is not int or not 64*1024**2<=size<=16*1024**3 or not re.fullmatch('[0-9a-f]{64}',expected):
+        raise RuntimeError('embedded installer source has invalid size or checksum metadata')
+    descriptor=os.open(INSTALLER_PAYLOAD,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(descriptor,'rb') as stream:
+        before=os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_size!=size or before.st_ino!=source.get('inode')
+                or before.st_mtime_ns!=source.get('mtime_ns')
+                or f'{os.major(before.st_dev)}:{os.minor(before.st_dev)}'!=source.get('filesystem_devnum')):
+            raise RuntimeError('embedded installer file changed after discovery')
+        digest=hashlib.sha256();remaining=size
+        while remaining:
+            block=stream.read(min(4*1024**2,remaining))
+            if not block:raise RuntimeError('embedded installer payload is truncated')
+            digest.update(block);remaining-=len(block)
+        after=os.fstat(stream.fileno())
+        if stream.read(1) or (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns):
+            raise RuntimeError('embedded installer payload changed during checksum verification')
+    if digest.hexdigest()!=expected:raise RuntimeError('embedded installer payload checksum mismatch')
+    emit('SURFACE_INSTALLER_PAYLOAD_VERIFIED',sha256=expected,bytes=size)
+    return {'status':'PASS','mode':'embedded installer source discovered and full SHA256 verified',
+            'sha256':expected,'bytes':size,'target_written':False}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--components',default='tailscale,moonlight,audio,wine,browser')
+    parser.add_argument('--components',default='installer,tailscale,moonlight,audio,wine,browser')
     parser.add_argument('--browser-hold',type=float,default=10)
     args=parser.parse_args()
     try:guard()
@@ -523,7 +559,7 @@ def main():
     boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     run=Path('/data/app-acceptance')/(time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+str(os.getpid()))
     run.mkdir(parents=True,mode=0o700)
-    checks={'tailscale':lambda:tailscale_check(run,boot_id),'moonlight':lambda:moonlight_check(run),'wine':lambda:wine_check(run),
+    checks={'installer':lambda:installer_check(run),'tailscale':lambda:tailscale_check(run,boot_id),'moonlight':lambda:moonlight_check(run),'wine':lambda:wine_check(run),
             'audio':lambda:audio_check(run),'browser':lambda:browser_check(run,max(0,min(args.browser_hold,60))),
             'proton':lambda:proton_check(run)}
     results={'boot_id':boot_id,'checks':{},'evidence_directory':str(run),'scope':'guest runtime; no Surface hardware, enrollment or streaming pass'}

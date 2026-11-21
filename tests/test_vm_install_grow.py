@@ -4,6 +4,7 @@ Only a disposable COPY of the shell script is executed with literal paths
 redirected to artifact files and strictly checked fixture commands. Production
 has no fixture/host override. Real GPT/resize behavior belongs to the guest test.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,19 +26,30 @@ class VmGrowIntegrationTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.log = self.base / 'calls.jsonl'
         self.config = self.base / 'config.json'
-        self.source = self.base / 'dev/vda'
+        self.media = self.base / 'dev/vda'
+        self.media_data = self.base / 'dev/vda3'
+        self.mountpoint = self.base / 'media-mount'
+        self.source = self.mountpoint / 'SurfaceGoGamingOS/surface-go.img'
         self.target = self.base / 'dev/vdb'
-        self.source.parent.mkdir()
+        self.media.parent.mkdir();self.source.parent.mkdir(parents=True)
+        self.media.write_bytes(b'OUTER MEDIA MUST NEVER BE CLONED\0'*1024)
+        self.media_data.write_bytes(b'fixture DATA partition')
         self.source.write_bytes(bytes(range(256)) * 64)
+        self.sidecar=Path(str(self.source)+'.sha256')
+        self.sidecar.write_text(hashlib.sha256(self.source.read_bytes()).hexdigest()+'  surface-go.img\n')
         self.target.write_bytes(b'TARGET SENTINEL\0' * 2048)
+        self.mountinfo=self.base/'mountinfo';self.mountinfo.write_text('')
         self.sys = self.base / 'sys/class'
         for relative, value in {
             'dmi/id/product_name': 'Surface Go OS Disposable Test VM',
-            'block/vda/serial': 'SURFACE_MEDIA', 'block/vda/size': str(self.source.stat().st_size // 512),
-            'block/vda/queue/logical_block_size': '512', 'block/vda/dev': '0:0',
+            'block/vda/serial': 'SURFACE_MEDIA', 'block/vda/size': str(self.media.stat().st_size // 512),
+            'block/vda/queue/logical_block_size': '512', 'block/vda/dev': '0:0','block/vda/ro':'1',
+            'block/vda/vda3/partition':'3','block/vda/vda3/dev':'0:0','block/vda/vda3/start':'100',
+            'block/vda/vda3/size':'8192',
             'block/vdb/serial': 'SURFACE_TEST_TARGET', 'block/vdb/size': '134217728',
         }.items():
             path = self.sys / relative;path.parent.mkdir(parents=True, exist_ok=True);path.write_text(value)
+        (self.sys/'block/vda3').symlink_to(self.sys/'block/vda/vda3',target_is_directory=True)
         self.cmdline = self.base / 'cmdline';self.cmdline.write_text('root=/dev/vda2 surface.vm-install=1 ro')
         self.bin = self.base / 'bin';self.bin.mkdir()
         self.helper = self.base / 'surface-grow-data-fixture'
@@ -62,12 +74,27 @@ def record(event,**values):
                 if cfg['scenario']=='mounted-alias': raise ValueError('Target is mounted through a UUID alias')
                 return dict(target=path,name='vdb',stable_id=expected,bytes=64*1024**3,devnum='252:16',profile=profile)
             def no_symlinks(path):
-                assert str(path)==config()['source'] and stat.S_ISREG(path.lstat().st_mode)
+                assert path.is_relative_to(CONFIG.parent)
+                current=path
+                while current!=CONFIG.parent:
+                    if stat.S_ISLNK(current.lstat().st_mode):raise ValueError('Symlink fixture refused')
+                    current=current.parent
                 return path
             def open_readonly_target(target):
                 record('readback-open')
-                assert target['target']==config()['target']
+                assert target['target'] in (config()['target'],config()['media'])
                 return os.open(target['target'],os.O_RDONLY|os.O_NOFOLLOW)
+            def read_gpt(descriptor,size):
+                record('gpt-check',bytes=size)
+                assert stat.S_ISREG(os.fstat(descriptor).st_mode)
+                if config()['scenario']=='bad-payload-gpt' and os.readlink('/proc/self/fd/'+str(descriptor))==config()['source']:
+                    raise ValueError('Invalid packaged GPT fixture')
+                return dict(parts=[{},{},dict(first=100,bytes=4194304)])
+            def read_ext4(descriptor,partition,pristine=False):
+                record('pristine-check',pristine=pristine)
+                assert pristine is True
+                if config()['scenario']=='dirty-payload':raise ValueError('Payload DATA is not pristine')
+                return dict(uuid='fixture-uuid',bytes=4*1024**3)
             if __name__=='__main__':
                 parser=argparse.ArgumentParser()
                 mode=parser.add_mutually_exclusive_group(required=True)
@@ -95,9 +122,11 @@ def record(event,**values):
         dd = self.bin / 'dd'
         dd.write_text('#!/usr/bin/env python3\n' + common + textwrap.dedent('''
             cfg=config();record('dd',argv=sys.argv[1:])
-            assert sys.argv[1:]==['if='+cfg['source'],'of='+cfg['target'],'bs=4M','conv=fsync']
-            source,target=Path(cfg['source']),Path(cfg['target'])
-            assert source.parent==target.parent and source.parent.parent==CONFIG.parent
+            assert sys.argv[1].startswith('if=/proc/self/fd/')
+            assert sys.argv[2:]==['of='+cfg['target'],'bs=4M','conv=fsync']
+            source,target=Path(sys.argv[1][3:]),Path(cfg['target'])
+            assert source.resolve()==Path(cfg['source']) and target.parent.parent==CONFIG.parent
+            source=source.resolve()
             assert stat.S_ISREG(source.lstat().st_mode) and stat.S_ISREG(target.lstat().st_mode)
             if cfg['scenario']=='dd-failed': sys.exit(5)
             with target.open('r+b') as stream:
@@ -106,19 +135,39 @@ def record(event,**values):
             if cfg['scenario']=='source-changed': Path(cfg['source_serial']).write_text('CHANGED')
             '''))
         dd.chmod(0o700)
+        mount=self.bin/'mount'
+        mount.write_text('#!/usr/bin/env python3\n'+common+textwrap.dedent('''
+            cfg=config();record('mount',argv=sys.argv[1:])
+            assert sys.argv[1:]==['-t','ext4','-o','ro,noload,nosuid,nodev,noexec',cfg['media_data'],cfg['mountpoint']]
+            options='rw,nosuid,nodev,noexec' if cfg['scenario']=='writable-source-mount' else 'ro,nosuid,nodev,noexec'
+            Path(cfg['mountinfo']).write_text('42 23 0:0 / '+cfg['mountpoint']+' '+options+' - ext4 '+cfg['media_data']+' ro\\n')
+            '''));mount.chmod(0o700)
+        umount=self.bin/'umount'
+        umount.write_text('#!/usr/bin/env python3\n'+common+textwrap.dedent('''
+            cfg=config();record('umount',argv=sys.argv[1:]);assert sys.argv[1:]==[cfg['mountpoint']]
+            Path(cfg['mountinfo']).write_text('')
+            '''));umount.chmod(0o700)
         for name in ('sync', 'poweroff'):
             command = self.bin / name
             command.write_text('#!/usr/bin/env python3\n' + common + f"record({name!r})\n")
             command.chmod(0o700)
         original = SCRIPT.read_text()
-        self.assertEqual(original.count('stat.S_ISBLK(info.st_mode)'), 1)
+        self.assertEqual(original.count('stat.S_ISBLK(info.st_mode)'), 2)
         transformed = original.replace('/usr/sbin/surface-grow-data', str(self.helper))
         transformed = transformed.replace('/proc/cmdline', str(self.cmdline))
+        transformed = transformed.replace('/proc/self/mountinfo', str(self.mountinfo))
+        transformed = transformed.replace('/run/surface-install-media',str(self.mountpoint))
         transformed = transformed.replace('/sys/class', str(self.sys))
-        transformed = transformed.replace('/dev/vda', str(self.source)).replace('/dev/vdb', str(self.target))
+        transformed = transformed.replace('/dev/vda', str(self.media)).replace('/dev/vdb', str(self.target))
         # This rewrite exists only in the disposable artifact copy. The real
         # installer continues to require real block nodes and the image guard.
         transformed = transformed.replace('stat.S_ISBLK(info.st_mode)', 'stat.S_ISREG(info.st_mode)')
+        transformed = transformed.replace('info.st_uid!=0','info.st_uid!=os.getuid()')
+        transformed = transformed.replace('initial.st_dev!=data_rdev','False')
+        transformed = transformed.replace('not os.fstatvfs(source_fd).f_flag&os.ST_RDONLY','False')
+        # Fixture payload directory already contains our files, whereas the
+        # production mountpoint is empty before the real readonly mount.
+        transformed = transformed.replace('or any(MOUNTPOINT.iterdir())','')
         self.script = self.base / 'install-vm-fixture.sh';self.script.write_text(transformed);self.script.chmod(0o700)
 
     def tearDown(self):
@@ -139,6 +188,8 @@ def record(event,**values):
                         efi_root_payload_preserved=True, old_data_payload_preserved_before_resize=True, mounted=False)
         self.config.write_text(json.dumps(dict(scenario=scenario, plan=plan, complete=complete, log=str(self.log),
                                                source=str(self.source), target=str(self.target),
+                                               media=str(self.media),media_data=str(self.media_data),mountpoint=str(self.mountpoint),
+                                               mountinfo=str(self.mountinfo),
                                                source_serial=str(self.sys / 'block/vda/serial'))))
 
     def run_case(self, scenario='success'):
@@ -154,17 +205,64 @@ def record(event,**values):
         self.assertEqual(value.returncode, 0, value.stdout + value.stderr)
         events = [call['event'] for call in calls]
         self.assertLess(events.index('guest-guard'), events.index('dd'))
-        self.assertLess(events.index('dd'), events.index('readback-open'))
-        self.assertLess(events.index('readback-open'), events.index('plan'))
+        self.assertLess(events.index('mount'),events.index('pristine-check'))
+        self.assertLess(events.index('pristine-check'),events.index('dd'))
+        self.assertLess(events.index('dd'), events.index('umount'))
+        self.assertLess(events.index('umount'), events.index('plan'))
         self.assertLess(events.index('plan'), events.index('execute'))
         self.assertLess(events.index('execute'), events.index('poweroff'))
         executed = next(call for call in calls if call['event'] == 'execute')
         self.assertEqual(executed['argv'][-2:], ['--review-token', TOKEN])
         self.assertIn('SURFACE_VM_CLONE_VERIFIED', value.stdout)
+        self.assertIn('SURFACE_VM_EMBEDDED_PAYLOAD_VERIFIED sha256='+hashlib.sha256(self.source.read_bytes()).hexdigest(),value.stdout)
         self.assertIn('SURFACE_VM_DATA_GROW_PASS bytes=', value.stdout)
         self.assertIn('SURFACE_VM_INSTALL_PASS', value.stdout)
         self.assertEqual(self.target.read_bytes()[:self.source.stat().st_size], self.source.read_bytes())
         (ARTIFACTS / 'control-flow-fixture-success.log').write_text(value.stdout + value.stderr)
+
+    def test_missing_corrupt_dirty_or_writable_payload_never_clones_outer_media(self):
+        for scenario in ('missing-payload','wrong-sha','bad-payload-gpt','dirty-payload','writable-source-mount'):
+            with self.subTest(scenario=scenario):
+                if self.log.exists():self.log.unlink()
+                content=self.source.read_bytes();manifest=self.sidecar.read_text();sentinel=self.target.read_bytes()
+                if scenario=='missing-payload':self.source.unlink()
+                if scenario=='wrong-sha':self.sidecar.write_text('0'*64+'  surface-go.img\n')
+                value,calls=self.run_case(scenario)
+                self.assertEqual(value.returncode,2,value.stdout+value.stderr)
+                self.assertNotIn('dd',[call['event'] for call in calls]);self.assertEqual(self.target.read_bytes(),sentinel)
+                self.assertNotIn('SURFACE_VM_INSTALL_PASS',value.stdout)
+                self.assertFalse(self.mountinfo.read_text())
+                self.source.write_bytes(content);self.sidecar.write_text(manifest)
+
+    def test_equal_logical_media_and_embedded_image_sizes_are_valid(self):
+        # Sparse inner/outer images have identical logical geometry even though
+        # the outer DATA filesystem contains the physically sparse base file.
+        with self.media.open('r+b') as stream:stream.truncate(self.source.stat().st_size)
+        (self.sys/'block/vda/size').write_text(str(self.source.stat().st_size//512))
+        value,calls=self.run_case()
+        self.assertEqual(value.returncode,0,value.stdout+value.stderr)
+        self.assertIn('SURFACE_VM_INSTALL_PASS',value.stdout)
+        self.assertEqual(len([call for call in calls if call['event']=='dd']),1)
+
+    def test_symlink_shared_write_and_bad_sidecar_refuse_before_target_write(self):
+        content=self.source.read_bytes();manifest=self.sidecar.read_text()
+        for scenario in ('symlink-source','shared-write-source','shared-write-sidecar','bad-sidecar','large-sidecar'):
+            with self.subTest(scenario=scenario):
+                if self.log.exists():self.log.unlink()
+                sentinel=self.target.read_bytes()
+                if scenario=='symlink-source':
+                    alias=self.base/'payload-alias';alias.write_bytes(content)
+                    self.source.unlink();self.source.symlink_to(alias)
+                elif scenario=='shared-write-source':self.source.chmod(0o666)
+                elif scenario=='shared-write-sidecar':self.sidecar.chmod(0o666)
+                elif scenario=='bad-sidecar':self.sidecar.write_text(manifest.replace('surface-go.img','other.img'))
+                else:self.sidecar.write_text('x'*4097)
+                value,calls=self.run_case()
+                self.assertEqual(value.returncode,2,value.stdout+value.stderr)
+                self.assertNotIn('dd',[call['event'] for call in calls]);self.assertEqual(self.target.read_bytes(),sentinel)
+                self.assertFalse(self.mountinfo.read_text())
+                if self.source.is_symlink():self.source.unlink();self.source.write_bytes(content)
+                self.source.chmod(0o644);self.sidecar.chmod(0o644);self.sidecar.write_text(manifest)
 
     def test_guest_and_alias_mount_refusal_precede_clone_or_helper_execution(self):
         for scenario in ('guest-refused', 'mounted-alias'):

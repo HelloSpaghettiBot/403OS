@@ -1,125 +1,97 @@
 # Status — November 20, 2026
 
-**Development build; live VM checks pass, acceptance incomplete.** The latest
-completed run, `artifacts/vm-tests/20261120-173635-live/`, reports **PARTIAL**
-with every implemented live check **PASS** and no failed checks. It tested
-`output/images/surface-go.img`, 6,510,628,864 bytes, SHA-256
-`73242f0c64f9a00447805c32ff3ced643619f8d5b357e6365c5e3f2a8008e635`.
-Build log: `artifacts/build/tailscale-idempotent-image.log`.
+**Development build; self-contained images compiled, live acceptance incomplete.**
+The new pipeline built an outer live USB and a separate pristine payload;
+full embedded-file readback and ownership checks pass. Each image is
+6,510,628,864 bytes. The last live attempt, `20261120-201812-live`, confirmed
+1800×1200 but failed waiting for the expected keyboard action acknowledgment.
+Visible keyboard interference is a possible cause, not an established diagnosis.
+Earlier visible attempts captured lower modes than requested. No complete
+self-contained live/install pass or corrected USB flash is claimed. Build log:
+`artifacts/build/self-contained-usb-image.log`.
 
-**Internal installation is blocked.** The 64 GiB VM install
-`20261120-173902-install` verified the clone checksum, then failed the final
-DATA-growth validation after `resize2fs` and `e2fsck` completed. A fresh
-partition-descriptor validation fix is compiled into corrected image SHA-256
-`3cdb38b2a39c96b06ba8a08573a08a8898ff0624a4477161d1873d4446da091d`.
-Its new `20261120-174857-install` run is in progress; no corrected install,
-cold-boot or matching live pass is claimed yet. The flashed 73242f USB remains
-live-test media with the earlier installer failure; corrected delivery needs
-new test evidence and a verified reflash.
+The owner subsequently requested installed-OS display resolution controls
+before USB replacement. The new flow lists connected DRM output modes, offers
+native/preferred, restarts compositor/HOME for a 45-second trial, automatically
+restores the previous mode on timeout, and persists only after **Keep**.
+Its implementation/rebuild and actual apply/Keep/rollback/cold-boot tests are
+in progress. Earlier image hashes below precede this new feature.
 
-The remaining partial scope includes physical Surface hardware, installed-disk
-cold-boot persistence, recovery and enrolled network/streaming operation.
-Compilation and virtual-device checks do not establish those capabilities.
-Build output filenames are mutable; retain the checksum and matching evidence.
+| Artifact under `output/images/` | Role |
+| --- | --- |
+| `surface-go.img` | Outer bootable USB with embedded installer in its 4 GiB DATA |
+| `surface-go-base.img` | Pristine installation image with empty 4 GiB DATA |
+| `surface-go-base.img.sha256`, `SHA256SUMS` | Separate payload/outer checksums |
+| `installer-media.json` | Both image identities and embedded readback evidence |
 
-Verified evidence:
+The sparse base is embedded as `/data/SurfaceGoGamingOS/surface-go.img` and
+`.sha256`, root owned and read only. The real installer discovers it on `/data`;
+no additional source media or manual staging is required. The inner base has
+no nested installer. The guarded VM installation path now mounts serialized
+outer-media DATA read only and clones the embedded file, not the outer image.
+The failed visible-run serial log does contain successful guest source
+discovery/full-payload SHA and application checks. A complete host live
+acceptance result is still required before delivery.
 
-- Pinned Buildroot 2026.08.2, Bootlin x86-64 glibc 2025.08-1, Linux 6.12.118,
-  SDL3 3.4.20 and Mesa 26.1.8. Builds use ten workers, a 24 GiB memory throttle,
-  32 GiB hard cap and 1 GiB swap, with a separate 32 GiB container cap.
-  VM wrappers retain their 6 GiB host cap and shared heavy-task lock.
-- All eleven emulator engines compiled and installed: FCEUmm, Snes9x,
-  Gambatte, mGBA, Genesis Plus GX, PCSX ReARMed, Mupen64Plus Next,
-  melonDS DS, Flycast, PPSSPP and standalone Dolphin. The completed live runs
-  passed the actual eleven-engine binary/core runtime probes and real NES
-  homebrew input/SRAM save/reload. A binary probe does not establish
-  gameplay compatibility or performance for each system.
-- The image includes Cog/WPE WebKit, Moonlight Embedded, official Tailscale
-  binaries, Wine64, UMU, Mesa Iris/ANV and the Intel media driver.
-  `artifacts/build/packages.json` currently contains 278 package records.
-- The completed 173635 run passed QEMU/KVM UEFI graphical HOME at 1800×1200,
-  4096 MiB and four vCPUs; root/DATA mounts; QMP keyboard framebuffer changes;
-  guest SDL keyboard/virtual-gamepad/touch injection; DHCP/DNS/HTTPS;
-  Bluetooth daemon startup; and confirmed UI poweroff/QEMU exit.
-  SDL3 used Wayland/GLES2 with software rendering, not verified Intel graphics.
-- Cog passed real rendered-page/JavaScript checks, CA-validated HTTPS and
-  keyboard Ctrl+W exit. The harness also launched the browser from the actual
-  HOME dock and returned through the global Ctrl+Alt+Home input path.
-  Physical three-finger touch and controller operation remain untested.
-- Wine64 passed an actual unprivileged Windows `cmd.exe` launch/exit.
-  Moonlight passed bounded help/version process launch/exit. Tailscale passed
-  daemon startup and temporary IPv4/IPv6 policy-routing checks in the final run
-  after the duplicate-start race was corrected. Its state remains unenrolled
-  (`NeedsLogin`); no stream, pairing or enrollment is claimed.
-- Original mountain wallpaper, original dock/system illustrations and licensed
-  Cantarell font atlases. Earlier private-library evidence includes 28 games
-  and 18 actual covers from the owner's Games drive, shared read only.
-  The completed November 20 runs had no owner game-library share. ROMs and
-  commercial cover art are absent from source and release images.
-- Earlier native tests rendered the owner's GBA/SNES games and N64 3D intro;
-  save persistence, state roundtrip and graceful signal/SRAM checks passed.
-  These are not Surface performance results.
-- Final-run audio passed strict captured-PCM verification: 42,523 frames at
-  44,100 Hz (0.96424 seconds), peak 2,987 and 41,617 non-silent frames.
-  Raw WAV SHA-256:
-  `90a7b7994d925339a936c1333f8637afe0fce70a617271bbae8db850c3e9f227`.
-  The QEMU header sizes remain unset; observed PCM was validated without
-  rewriting the recording. This does not verify physical speakers.
-- The corrected-source Python suite passed all 197 tests; evidence:
-  `artifacts/tests/final-corrected-python.log`. Five native C++ executables and
-  shell syntax checks also passed; full-script evidence remains in
-  `artifacts/tests/final-complete.log`. These do not substitute for the pending
-  corrected-image installation/cold-boot/live tests.
+Last completed packaging SHA-256 values, before the display-settings rebuild:
 
-Implemented; remaining acceptance limits:
+- Outer `surface-go.img`: `517d91b831a276431b304329e2cc632dac4260198f4cf6ba31df0e80ca08f58c`
+- Pristine `surface-go-base.img`: `9b930ccd1e89288daf7e84302f2ca093731bd6b6baeff513c9f29e2f9f5eceeb`
 
-- Dolphin/Xwayland uses native 1x presets with explicit compatibility tradeoffs.
-  Full-speed GameCube operation and real controller bindings need hardware tests.
-- Mesa Iris, Intel media driver, redistributable Intel/Qualcomm firmware and
-  regulatory data are packaged; actual Surface device IDs remain unverified.
-- WiFi/BlueZ/Tailscale/Moonlight service UI, masked on-screen keyboard, volume,
-  brightness, library search, favorites/history and per-game state are present.
-  Guided SDL mapping and global-return parser fixtures pass. Pairing/configuration
-  UI acceptance and physical touch/controller tests remain separate work.
-- Official PokeMMO first-run setup uses an official client download and pinned
-  Java runtime; neither is bundled. Digimon World 3 Online imports an unchanged
-  owner client. Neither online game has passed target launch/login/gameplay.
-  UMU 1.4.4 and explicit Proton/Steam-runtime setup are packaged. Wine/Proton
-  run as gaming UID 1000 in separate private prefixes. The Wine command probe
-  passed; Proton setup was not requested in the completed live run.
-- Internal installation has source checksum, exact typed erase confirmation,
-  identity recheck, clone/readback/GPT checks and pristine-DATA expansion.
-  Eighteen physical-installer fixtures, eleven growth fixtures and six VM-flow
-  fixtures pass. The real installed-guest attempt failed final DATA validation;
-  installation completion and detached cold boots remain unverified. No
-  Surface internal-disk erase is authorized.
+Completed evidence for the preceding pristine image SHA-256
+`3cdb38b2a39c96b06ba8a08573a08a8898ff0624a4477161d1873d4446da091d`:
 
-Blocking release acceptance:
+| Run | Result |
+| --- | --- |
+| `20261120-174857-install` | PASS: 64 GiB clone/readback/GPT and pristine DATA growth |
+| `20261120-175146-test` | PARTIAL; all implemented checks PASS, detached UEFI, DATA count 1 |
+| `20261120-175257-test` | PARTIAL; all implemented checks PASS, count 2, 3 GiB/two CPUs/AHCI/1280×800 |
+| `20261120-175359-test` | PARTIAL; all implemented checks PASS, count 3, default profile |
+| `20261120-175512-live` | PARTIAL; all implemented live checks PASS |
 
-- Correct the final DATA verification failure, install a rebuilt image to a
-  fresh disposable 64 GiB VM disk, then cold-boot twice after its initial boot
-  without installer media. Validate persistence, constrained-memory,
-  AHCI and recovery behavior. The completed live shutdown reached poweroff
-  but logged busy `/data` and `/run` unmount warnings; filesystem recovery/persistence
-  has not been established by that UI poweroff check.
-- Actual Surface live boot, Intel acceleration/video decode, Type Cover, touch,
-  speakers, WiFi, Bluetooth pairing/reconnect, battery, brightness, microSD and
-  suspend/resume are **UNTESTED**. See `SURFACE_HARDWARE_TESTS.md`.
-- Live Sunshine streaming and Tailscale enrollment are **BLOCKED** without an
-  authorized host/test account; no credentials have been used or stored.
-- Independent clean-build reproducibility and legal-info review remain pending.
-- The owner Games drive previously disconnected repeatedly through its USB
-  bridge. Earlier game evidence remains recorded; fresh owner-game tests need
-  a stable connection.
+DATA grew from 4 GiB to 66,503,815,168 filesystem bytes while preserving its
+identity and EFI/root payloads. Repeat boots verified unchanged unenrolled
+Tailscale state. These tests establish the prior image's VM behavior, not
+validation of the newly embedded-payload media path.
 
-USB delivery: the owner-authorized whole-USB flash completed **PASS** on
-November 20. All 6,510,628,864 image bytes were read back and matched the
-73242f image SHA-256; image GPT CRCs passed and obsolete end-GPT metadata was
-cleared. UDisks power-off then completed successfully. The old H
-partitions/files were replaced. This was a normal flash,
-not secure full-media erasure; USB DATA remains 4 GiB. The private receipt is
-`artifacts/usb-execution/full-flash-1795225100224929858/result.json`.
-Exact hardware identity remains only in ignored private plans. This verifies
-delivery bytes for the live-tested 73242f image, not Surface boot or a working
-internal installer. A corrected image requires another verified flash. No
-Surface internal-disk erase is authorized.
+Verified runtime scope includes UEFI HOME, root/DATA mounts, actual framebuffer
+focus changes, guest SDL/QMP input injection, DHCP/DNS/HTTPS, Bluetooth daemon,
+Cog HTTPS/render/Ctrl+W and HOME/global-return flow, eleven engine/core probes,
+real MIT NES input/SRAM reload, unprivileged Wine Windows command exit,
+Moonlight help/version, Tailscale daemon and non-silent captured audio.
+They do not establish physical controllers/radios, game compatibility across
+all systems, streaming, online-client gameplay or Surface performance.
+SDL3 uses Wayland/GLES2 with Mesa software rendering in the VM; Intel
+acceleration is packaged but not verified on hardware.
+
+Current source verification: **210 Python tests PASS** in
+`artifacts/tests/self-contained-python.log`; five native C++ executables and
+shell syntax checks previously pass. The image pipeline fixtures prove sparse
+large-file import, root ownership/modes, pristine nonrecursive DATA and guarded
+source discovery. Source tests do not replace actual new-image acceptance.
+Builds use ten workers, 24 GiB throttle, 32 GiB hard cap/container cap and
+1 GiB swap; VM host limit remains 6 GiB with its existing guest profiles.
+
+The image packages eleven emulator engines, Cog/WPE, Moonlight, Tailscale,
+Wine64/UMU and Intel graphics/firmware support. PokeMMO setup and DW3 import
+are implemented, but target login/gameplay and explicit Proton setup remain
+untested. No ROMs, BIOS, proprietary clients, accounts or keys ship.
+
+Remaining gates are display-settings build/apply/rollback/persistence checks,
+the complete self-contained live source-discovery/install path and
+verified USB replacement; actual Surface boot/input/graphics/audio/radios/power;
+interrupted-boot recovery; authorized streaming/enrollment; and legal-info/
+clean-build reproducibility. Physical Surface behavior is **UNTESTED**.
+No Surface internal-disk erase has been authorized.
+
+An earlier 73242f image was flashed to the authorized external H USB and its
+complete image readback/GPT verification/power-off passed. Its old H files were
+replaced. That delivery lacks the new embedded payload and must be replaced
+after the new artifact passes validation. Normal flashing is not secure
+full-media erasure; USB DATA remains 4 GiB. Private identity/receipts stay in
+ignored `artifacts/usb-execution/`.
+
+Initial source commit `6e4f165` is published at
+[HelloSpaghettiBot/403OS](https://github.com/HelloSpaghettiBot/403OS).
+This is source publication, not a binary release. A source follow-up with the
+self-contained pipeline and completed new evidence is pending.

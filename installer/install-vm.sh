@@ -11,7 +11,8 @@ test "$(cat /sys/class/block/vdb/size)" -eq 134217728 || { echo 'Wrong disposabl
 test -x /usr/sbin/surface-grow-data || { echo 'DATA growth helper is missing'; exit 2; }
 # Python performs read-only device-number/mount/holder/swap checks before dd,
 # verifies the whole clone, and consumes the guarded helper's internal review.
-# DATA stays unmounted throughout. No growth runs during later installed boots.
+# Target DATA stays unmounted throughout. Installer media DATA is mounted read-only.
+# No growth runs during later installed boots.
 python3 - <<'PY'
 import hashlib
 import json
@@ -24,7 +25,9 @@ import subprocess
 import sys
 
 HELPER = '/usr/sbin/surface-grow-data'
-SOURCE, TARGET = '/dev/vda', '/dev/vdb'
+MEDIA, MEDIA_DATA, TARGET = '/dev/vda', '/dev/vda3', '/dev/vdb'
+MOUNTPOINT = Path('/run/surface-install-media')
+SOURCE = MOUNTPOINT / 'SurfaceGoGamingOS/surface-go.img'
 TARGET_ID, TARGET_BYTES = 'SURFACE_TEST_TARGET', 64 * 1024 ** 3
 
 def emit(message):
@@ -49,14 +52,14 @@ try:
         if grow['current_target'](TARGET, 'vm-install', TARGET_ID) != reviewed:
             raise ValueError('Target identity, capacity or mount state changed')
 
-    def source_identity():
+    def media_identity():
         node = Path('/sys/class/block/vda')
         if (node / 'serial').read_text().strip() != 'SURFACE_MEDIA':
             raise ValueError('Installer media serial changed')
-        if (node / 'queue/logical_block_size').read_text().strip() != '512':
-            raise ValueError('Installer media must have 512-byte sectors')
-        grow['no_symlinks'](Path(SOURCE))
-        info = Path(SOURCE).lstat()
+        if (node / 'queue/logical_block_size').read_text().strip() != '512' or (node / 'ro').read_text().strip() != '1':
+            raise ValueError('Installer media requires read-only 512-byte block geometry')
+        grow['no_symlinks'](Path(MEDIA))
+        info = Path(MEDIA).lstat()
         if not stat.S_ISBLK(info.st_mode):
             raise ValueError('Installer media is not a direct block device')
         devnum = f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}'
@@ -65,40 +68,119 @@ try:
         size = int((node / 'size').read_text().strip()) * 512
         if not 0 < size < TARGET_BYTES:
             raise ValueError('Invalid installer media size')
-        return info.st_rdev, size
+        return dict(target=MEDIA, devnum=devnum, bytes=size)
 
-    source = source_identity()
-    unchanged()
-    emit('SURFACE_VM_INSTALL_BEGIN target=/dev/vdb serial=SURFACE_TEST_TARGET')
-    subprocess.run(['dd', 'if=' + SOURCE, 'of=' + TARGET, 'bs=4M', 'conv=fsync'],
-                   stdin=subprocess.DEVNULL, timeout=600, check=True)
-    unchanged()
-    if source_identity() != source:
-        raise ValueError('Installer media changed while cloning')
-    emit('SURFACE_VM_CLONE_VERIFY_BEGIN')
-    source_fd = target_fd = None
+    def mount_record():
+        matches=[]
+        for line in Path('/proc/self/mountinfo').read_text().splitlines():
+            columns=line.split()
+            if len(columns)<10 or '-' not in columns:continue
+            point=re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),columns[4])
+            if point==str(MOUNTPOINT):matches.append(columns)
+        if len(matches)>1:raise ValueError('Installer mountpoint has ambiguous mount records')
+        return matches[0] if matches else None
+
+    media=media_identity()
+    media_fd=grow['open_readonly_target'](media)
+    try:outer=grow['read_gpt'](media_fd,media['bytes'])
+    finally:os.close(media_fd)
+    media_partition=outer['parts'][2]
+    partition_node=Path('/sys/class/block/vda3')
+    def media_partition_identity():
+        grow['no_symlinks'](Path(MEDIA_DATA))
+        info=Path(MEDIA_DATA).lstat()
+        if not stat.S_ISBLK(info.st_mode) or partition_node.resolve(strict=True).parent!=Path('/sys/class/block/vda').resolve(strict=True):
+            raise ValueError('Installer DATA is not a partition of the serialized media')
+        number=f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}'
+        if ((partition_node/'partition').read_text().strip()!='3' or
+            (partition_node/'dev').read_text().strip()!=number or
+            (partition_node/'start').read_text().strip()!=str(media_partition['first']) or
+            (partition_node/'size').read_text().strip()!=str(media_partition['bytes']//512)):
+            raise ValueError('Installer DATA kernel identity or geometry changed')
+        return info.st_rdev
+    data_rdev=media_partition_identity()
+    if mount_record() is not None:raise ValueError('Installer media mountpoint was already mounted')
+    if MOUNTPOINT.exists():
+        grow['no_symlinks'](MOUNTPOINT)
+        if not MOUNTPOINT.is_dir() or any(MOUNTPOINT.iterdir()):raise ValueError('Installer media mountpoint is not an empty directory')
+    else:MOUNTPOINT.mkdir(mode=0o700)
+    mounted=False;source_fd=target_fd=None
     try:
-        source_fd = os.open(SOURCE, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        target_fd = grow['open_readonly_target'](reviewed)
-        digest = hashlib.sha256()
-        offset = 0
-        while offset < source[1]:
-            count = min(4 * 1024 * 1024, source[1] - offset)
-            original = os.pread(source_fd, count, offset)
-            copied = os.pread(target_fd, count, offset)
-            if len(original) != count or copied != original:
-                raise ValueError('Whole-image clone readback failed; DATA growth refused')
-            digest.update(original)
-            offset += count
+        subprocess.run(['mount','-t','ext4','-o','ro,noload,nosuid,nodev,noexec',MEDIA_DATA,str(MOUNTPOINT)],
+                       stdin=subprocess.DEVNULL,timeout=20,check=True)
+        mounted=True
+        def source_mount_unchanged():
+            if media_identity()!=media or media_partition_identity()!=data_rdev:
+                raise ValueError('Installer media changed during payload verification')
+            columns=mount_record()
+            if columns is None:raise ValueError('Installer media mount disappeared')
+            split=columns.index('-')
+            if (columns[2]!=f'{os.major(data_rdev)}:{os.minor(data_rdev)}' or columns[3]!='/' or
+                not {'ro','nosuid','nodev','noexec'}<=set(columns[5].split(',')) or
+                columns[split+1]!='ext4' or 'ro' not in columns[split+3].split(',')):
+                raise ValueError('Installer DATA mount is not the exact read-only restricted source')
+        source_mount_unchanged()
+        def regular_source(path,bound=None):
+            grow['no_symlinks'](path)
+            info=path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or (bound is not None and info.st_size>bound):
+                raise ValueError('Packaged installer payload must be a bounded root-owned regular file without shared write access')
+            return info
+        def metadata(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        initial=regular_source(SOURCE)
+        if initial.st_dev!=data_rdev or not 0<initial.st_size<=media['bytes']:
+            raise ValueError('Packaged payload is not stored on installer DATA or exceeds the media')
+        source_fd=os.open(SOURCE,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
+        if metadata(os.fstat(source_fd))!=metadata(initial) or not os.fstatvfs(source_fd).f_flag&os.ST_RDONLY:
+            raise ValueError('Packaged source changed while opening or its filesystem is writable')
+        checksum=Path(str(SOURCE)+'.sha256');checksum_info=regular_source(checksum,4096)
+        checksum_fd=os.open(checksum,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
+        with os.fdopen(checksum_fd,'rb') as manifest:
+            if metadata(os.fstat(manifest.fileno()))!=metadata(checksum_info):raise ValueError('Payload checksum changed while opening')
+            raw=manifest.read(4097)
+            if len(raw)!=checksum_info.st_size or metadata(os.fstat(manifest.fileno()))!=metadata(checksum_info):
+                raise ValueError('Payload checksum changed during reading')
+        match=re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?surface-go\.img[ \t]*\n?',raw.decode('ascii'))
+        if not match:raise ValueError('Packaged checksum must identify surface-go.img')
+        expected_sha=match[1].lower()
+        payload_gpt=grow['read_gpt'](source_fd,initial.st_size)
+        grow['read_ext4'](source_fd,payload_gpt['parts'][2],pristine=True)
+        digest=hashlib.sha256();offset=0
+        while offset<initial.st_size:
+            block=os.pread(source_fd,min(4*1024*1024,initial.st_size-offset),offset)
+            if not block:raise ValueError('Packaged source ended during checksum verification')
+            digest.update(block);offset+=len(block)
+        def source_unchanged():
+            source_mount_unchanged()
+            if metadata(os.fstat(source_fd))!=metadata(initial) or metadata(regular_source(SOURCE))!=metadata(initial):
+                raise ValueError('Packaged source metadata changed during installation')
+            if metadata(regular_source(checksum,4096))!=metadata(checksum_info):
+                raise ValueError('Packaged checksum metadata changed during installation')
+        source_unchanged()
+        if digest.hexdigest()!=expected_sha:raise ValueError('Packaged source SHA256 does not match its checksum; target remains untouched')
+        emit(f'SURFACE_VM_EMBEDDED_PAYLOAD_VERIFIED sha256={expected_sha} bytes={initial.st_size}')
+        unchanged()
+        emit('SURFACE_VM_INSTALL_BEGIN target=/dev/vdb serial=SURFACE_TEST_TARGET')
+        # The inherited read-only descriptor binds dd to the verified inode.
+        subprocess.run(['dd','if=/proc/self/fd/'+str(source_fd),'of='+TARGET,'bs=4M','conv=fsync'],
+                       stdin=subprocess.DEVNULL,pass_fds=(source_fd,),timeout=600,check=True)
+        unchanged();source_unchanged()
+        emit('SURFACE_VM_CLONE_VERIFY_BEGIN')
+        target_fd=grow['open_readonly_target'](reviewed)
+        digest=hashlib.sha256();offset=0
+        while offset<initial.st_size:
+            count=min(4*1024*1024,initial.st_size-offset)
+            original=os.pread(source_fd,count,offset);copied=os.pread(target_fd,count,offset)
+            if len(original)!=count or copied!=original:raise ValueError('Whole-image clone readback failed; DATA growth refused')
+            digest.update(original);offset+=count
+        unchanged();source_unchanged()
+        if digest.hexdigest()!=expected_sha:raise ValueError('Packaged source SHA256 changed during readback')
+        emit(f'SURFACE_VM_CLONE_VERIFIED bytes={initial.st_size} sha256={digest.hexdigest()}')
     finally:
-        if source_fd is not None:
-            os.close(source_fd)
-        if target_fd is not None:
-            os.close(target_fd)
-    unchanged()
-    if source_identity() != source:
-        raise ValueError('Installer media changed during readback')
-    emit(f'SURFACE_VM_CLONE_VERIFIED bytes={source[1]} sha256={digest.hexdigest()}')
+        if source_fd is not None:os.close(source_fd)
+        if target_fd is not None:os.close(target_fd)
+        if mounted:
+            subprocess.run(['umount',str(MOUNTPOINT)],stdin=subprocess.DEVNULL,timeout=20,check=True)
 
     common = ['--target', TARGET, '--profile', 'vm-install', '--expected-target-id', TARGET_ID]
     planned = subprocess.run([HELPER, '--plan', *common], stdin=subprocess.DEVNULL,

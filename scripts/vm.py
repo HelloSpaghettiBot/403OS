@@ -155,7 +155,7 @@ class VM:
                    "-device", "hda-duplex,audiodev=audio0",
                    "-serial", f"file:{self.log}", "-monitor", "none",
                    "-qmp", f"unix:{self.qmp_path},server=on,wait=off",
-                   "-display", "gtk" if args.visible else "none"]
+                   "-display", "sdl,gl=off" if args.visible else "none"]
         options = prepare_test_options(directory, args, disk, install=install, media=media)
         if options is not None:
             command += ["-virtfs", f"local,id=test_options,path={options},mount_tag=surface_test_options,security_model=none,readonly=on"]
@@ -335,6 +335,11 @@ def main():
         if not image.is_file():
             raise FileNotFoundError("Build output/images/surface-go.img first")
         summary["image_sha256"] = hashlib.file_digest(image.open("rb"), "sha256").hexdigest()
+        base = ROOT / "output/images/surface-go-base.img"
+        if not base.is_file() or base.is_symlink():
+            raise FileNotFoundError("Build the pristine embedded installer payload first")
+        with base.open("rb") as source:
+            summary["installer_payload_sha256"] = hashlib.file_digest(source, "sha256").hexdigest()
         summary["qemu"] = subprocess.check_output(["qemu-system-x86_64", "--version"], text=True).splitlines()[0]
         disk = args.disk or directory / "installed.qcow2"
         if args.mode == "live":
@@ -352,6 +357,10 @@ def main():
             if "SURFACE_VM_DATA_GROW_PASS" not in vm.log.read_text(errors="replace"):
                 raise RuntimeError("Verified installed DATA expansion was not reported")
             summary["checks"]["pristine_installed_data_expansion"] = "PASS"
+            marker = re.search(r"SURFACE_VM_EMBEDDED_PAYLOAD_VERIFIED sha256=([a-f0-9]{64}) bytes=(\d+)", vm.log.read_text(errors="replace"))
+            if not marker or marker.group(1) != summary["installer_payload_sha256"] or int(marker.group(2)) != base.stat().st_size:
+                raise RuntimeError("VM installation did not verify the expected embedded pristine payload")
+            summary["checks"]["embedded_installer_payload"] = "PASS"
         else:
             vm.wait_for("SURFACE_BROWSER_DISPLAY_READY",300)
             vm.screenshot("browser.png")
@@ -394,6 +403,11 @@ def main():
             summary["checks"]["bluetooth_service"] = "PASS" if "SURFACE_BLUETOOTH_SERVICE_PASS" in data else "FAIL"
             app_log=vm.log.read_text(errors="replace")
             record_proton_result(summary,app_log,args.test_proton)
+            if args.mode == "live":
+                marker = re.search(r"SURFACE_INSTALLER_PAYLOAD_VERIFIED sha256=([a-f0-9]{64}) bytes=(\d+)", app_log)
+                if not marker or marker.group(1) != summary["installer_payload_sha256"] or int(marker.group(2)) != base.stat().st_size:
+                    raise RuntimeError("Live USB did not discover and verify its expected embedded installer payload")
+                summary["checks"]["embedded_installer_payload"] = "PASS"
             for feature,marker in {
                 "browser_runtime_launch_exit":"SURFACE_BROWSER_PASS",
                 "moonlight_binary_runtime":"SURFACE_MOONLIGHT_PASS",

@@ -107,6 +107,23 @@ class InstallerSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(installer.Refused, 'SHA256 differs'):
             installer.plan_install(target, source, target['stable_id'], '0' * 64)
 
+    def test_self_contained_payload_on_mounted_data_is_discovered_without_other_mounts(self):
+        data=self.base/'mounted-data';payload=data/'SurfaceGoGamingOS';payload.mkdir(parents=True)
+        candidate=payload/'surface-go.img';os.link(self.image,candidate)
+        os.link(Path(str(self.image)+'.sha256'),Path(str(candidate)+'.sha256'))
+        before=candidate.stat().st_mtime_ns
+        mounts=f'42 23 8:3 / {data} rw,nosuid,nodev - ext4 /dev/fixture3 rw\n'
+        original_read=Path.read_text
+        def read_text(path,*arguments,**keywords):
+            return mounts if str(path)=='/proc/self/mountinfo' else original_read(path,*arguments,**keywords)
+        with patch.object(installer,'require_guest'),patch.object(Path,'read_text',read_text), \
+             patch.object(installer,'command',side_effect=AssertionError('Mounted DATA needs no mount/probe command')):
+            sources,errors=installer.discover_sources([])
+        self.assertEqual(errors,[]);self.assertEqual(len(sources),1)
+        self.assertEqual(sources[0]['path'],str(candidate));self.assertEqual(sources[0]['sha256'],self.digest)
+        self.assertFalse(sources[0]['checksum_verified'])  # Full hashing still happens before target writes.
+        self.assertEqual(candidate.stat().st_mtime_ns,before)
+
     def test_usb_fixed_disks_removable_and_small_targets_rejected(self):
         for name, options in [('sda', {'usb': True}), ('sdb', {'removable': True}),
                               ('sdc', {'size': installer.MINIMUM_TARGET - 512})]:

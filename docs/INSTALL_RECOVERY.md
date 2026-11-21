@@ -30,77 +30,76 @@ publisher.
 
 ## Prepare and live-test the authorized USB
 
-`installer/flash-usb.py` is the current whole-device delivery tool. It replaces
-all old partitions, including H, with the compiled image's EFI, root and
-4 GiB DATA layout. It also clears the obsolete physical-end GPT. It does not
-securely zero every remaining byte, enlarge DATA, or preserve old H files.
-Unused USB capacity remains outside the image's partition layout.
+The build produces two artifacts:
 
-On November 20 the authorized USB flash and complete image readback passed
-for the exact image recorded in [STATUS.md](STATUS.md); GPT verification and
-old end-GPT clearing passed too. This confirms delivery bytes, not Surface
-boot. The original H contents were replaced. Keep the private write receipt
-with the image/checksum and retain separate backups of any needed files.
+| Artifact under `output/images/` | Use |
+| --- | --- |
+| `surface-go.img` | Flash this self-contained bootable USB image |
+| `surface-go-base.img` | Pristine installation payload; empty DATA, no nested image |
+| `SHA256SUMS`, `surface-go-base.img.sha256` | Separate outer/base checksum records |
+| `installer-media.json` | Both identities and embedded-payload readback receipt |
 
-Exact USB model, serial, capacity, stable USB by-id path and the final tested
-image SHA-256 are recorded in ignored
-`artifacts/usb-execution/full-device-plan.json`. The public
-`installer/USB_EXECUTION_PLAN.json` is an intentionally unusable example.
-The old H-preserving planner/writer is superseded; its execution entry point
-is disabled. Do not use its synthetic fixture identity for a real device.
+The outer USB carries the sparse base as
+`/data/SurfaceGoGamingOS/surface-go.img` and its `.sha256` sidecar. These files
+are root owned and read only; the mounted DATA also holds normal live settings.
+The installation panel discovers that source automatically through the real
+source-finder service. **No second source USB or manual staging is required.**
+Installation copies the pristine embedded file, not the outer USB image, so
+the installed DATA starts empty and does not contain another installer image.
 
-The source image stays on the separate mounted FILES drive. First run the
-read-only preview, which opens no raw USB descriptor:
+The new self-contained images compiled and the embedded file passed build-time
+readback/ownership checks; VM runtime validation is pending. The
+preceding pristine image passed installation, DATA growth and three detached
+boots, but those results do not validate newly embedded source discovery.
+Before delivery require exact new outer/base checksums, live full-payload
+verification and successful VM installation from the embedded file.
+
+`installer/flash-usb.py` replaces the authorized USB's old partitions/files
+with the outer image's EFI, root and 4 GiB DATA and clears the obsolete end GPT.
+It does not securely zero remaining media or expand USB DATA. Extra USB
+capacity remains outside the image layout. Exact target identity, image SHA
+and execution receipts stay under ignored `artifacts/usb-execution/`; the
+checked-in execution plan is an unusable example.
+
+The source outer image stays on the separate mounted FILES drive. The default
+preview opens no raw USB descriptor:
 
 ```sh
 python3 installer/flash-usb.py --plan artifacts/usb-execution/full-device-plan.json
 ```
 
-Before physical execution, record the final image SHA in the private plan,
-complete the matching live UEFI VM checks, mark the reviewed private plan
-`READY_FOR_EXECUTION`, and retain its SHA-256. Root alone executes the helper
-with `--execute`, `--expected-plan-sha256`, `--boot-result` pointing to that
-completed live result, and `--confirm` containing `ERASE ENTIRE USB ` followed
-by the exact reviewed serial. These values must come from the reviewed
-private plan, not a device letter or a copied generic disk-writing command.
+Physical execution requires the reviewed private plan SHA, matching completed
+live evidence and the exact serial-specific erase phrase. The helper verifies
+source SHA before target unmounts, rechecks USB identity and active storage,
+opens exclusively through UDisks, retains partition-metadata backups on FILES,
+and verifies full image readback/GPT and end-GPT clearing. Normal polkit
+permission can be needed. Require the final PASS receipt; metadata backups
+cannot restore old files after copying begins. An interruption may require a
+fresh verified flash.
 
-The helper verifies the complete source hash before unmounting anything,
-then unmounts only the target's filesystems through UDisks. It requires USB
-kernel ancestry, an exact model/serial/capacity match, no protected host mounts
-or active swap, and an exclusive block descriptor with matching geometry.
-UDisks/polkit permission can be required; `--allow-auth-dialog` permits its
-normal authentication dialog. Permission availability has been inspected
-read only; no writable-open authorization was assumed or bypassed.
+An earlier image's authorized flash/readback and power-off passed, replacing
+H's old files; that image lacks the self-contained installer payload. It must
+be replaced by the new validated outer image. This is not a Surface boot claim.
 
-Old partition metadata, the private plan and completion/error receipts are
-saved on FILES under `artifacts/usb-execution/full-flash-*/` before copying.
-A successful result requires complete image readback SHA-256, valid image GPT
-CRCs and verified clearing of the old end GPT. Metadata backups cannot restore
-the old H files. An interrupted flash can leave the entire target unusable;
-there is no automatic rollback of its old contents. Keep reliable power
-connected and require the final `PASS` receipt.
-
-Boot and test the USB before considering internal installation. Confirm HOME,
-input, clean application return, display, sound, networking and required game
-controllers on the actual Surface using
+Boot and test the new USB on the actual Surface before internal installation.
+Check HOME, input, app return, display, sound, networking and controllers using
 [SURFACE_HARDWARE_TESTS.md](SURFACE_HARDWARE_TESTS.md). A live boot is not an
-installation confirmation.
+erase confirmation.
 
-The internal installer also needs a separate, validated source image file;
-the raw-flashed USB does not contain a second copy for this purpose. For a
-future separately authorized internal installation, retain these files on
-separately reviewed source media:
+## Change the OS display resolution
 
-```text
-SurfaceGoGamingOS/surface-go.img
-SurfaceGoGamingOS/surface-go.img.sha256
-```
+The new Settings → **Display resolution** flow is being integrated and is
+not yet validated in the flashed USB. It lists modes detected on connected
+DRM outputs, including **native / preferred**; it does not invent unsupported
+resolutions. This changes the OS output, separately from Moonlight's streaming
+profile.
 
-The sidecar contains the matching SHA-256, optionally followed by
-`surface-go.img`, as in the build's `SHA256SUMS` line. The installer discovers
-this folder on mounted media or mounts a separate NTFS USB source read only.
-Do not expect the old H staging folder to survive the authorized whole-USB
-flash. No additional source media has been modified automatically.
+Close apps and save work before Apply: the compositor and HOME restart to
+try the selected mode. The new mode has a 45-second confirmation window.
+Choose **Keep this resolution** only when display, text and input are usable;
+Keep saves it for later boots. Choose **Restore previous resolution**, or wait
+for the timer to restore the previous mode automatically. This recovery flow
+still requires VM and physical display tests before being treated as verified.
 
 ## Surface firmware and USB boot
 
@@ -125,10 +124,10 @@ bypass it.
 
 ## Review an internal installation
 
-The currently flashed live-tested image has a known VM installation failure
-in final DATA-growth validation. A corrected image and new successful
-installation/cold-boot tests are required before this workflow is ready.
-Do not treat a successful USB flash or live boot as installation acceptance.
+The self-contained image's embedded-source installation must pass the new VM
+checks before this workflow is ready. Earlier pristine-image installation and
+cold boots passed; physical installation remains untested. Do not treat a
+source test, USB flash or live boot as physical installation acceptance.
 
 After the owner separately authorizes erasing the exact internal disk, use
 HOME's Settings → **Install to internal storage**. This calls the image's
@@ -141,7 +140,7 @@ the disposable QEMU fixture and is not the physical installer.
    logical sectors. USB, removable, boot/root, mounted and active-swap targets
    are excluded. An excluded target is a reason to investigate, not to bypass
    the guard.
-2. Review the staged source filename and exact SHA-256, the all-partitions
+2. Review the discovered embedded source filename and exact SHA-256, the all-partitions
    erase warning and the proposed DATA capacity. The source must be separate
    from the target. Existing Windows, recovery partitions and existing OS DATA
    on the selected internal disk are all replaced; there is no dual-boot or

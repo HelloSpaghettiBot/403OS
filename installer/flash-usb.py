@@ -29,7 +29,7 @@ gpt = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gpt)
 REQUIRED_BOOT_CHECKS = ('uefi_graphical_boot', 'root_and_persistent_data_mount',
                         'sdl_keyboard_gamepad_injection', 'qmp_keyboard_focus_and_framebuffer',
-                        'ui_clean_poweroff')
+                        'ui_clean_poweroff', 'embedded_installer_payload')
 
 
 class FlashError(Exception):
