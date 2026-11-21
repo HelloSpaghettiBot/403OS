@@ -90,6 +90,14 @@ int main() {
         assert(!center.view().busy);
 
         center.open(PanelKind::Settings); cancelQuery(center);
+        select(center,"Display resolution"); center.navigate(Action::Accept);
+        assert(center.view().title=="Display resolution");
+        assert(center.view().status.find("only inside")!=std::string::npos);
+        assert(!center.view().busy);
+        center.navigate(Action::Accept);
+        assert(center.view().status.find("only inside")!=std::string::npos);
+        center.navigate(Action::Back);
+        assert(center.view().title=="Settings"); cancelQuery(center);
         select(center,"Restart device"); center.navigate(Action::Accept);
         assert(center.view().rows[center.view().selected]=="Cancel");
         center.navigate(Action::Accept);

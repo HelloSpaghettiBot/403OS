@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace surface {
-enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows };
+enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows, Display };
 struct ControlView {
     std::string title;
     std::vector<std::string> rows;

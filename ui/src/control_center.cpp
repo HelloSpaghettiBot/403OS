@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -251,6 +252,55 @@ std::string storage(const std::string& path) {
 } // namespace
 
 namespace control_detail {
+struct InstallSource { std::string path,hash; std::uint64_t bytes=0; };
+struct InstallTarget { std::string path,id,model; std::uint64_t bytes=0; };
+std::string installCapacity(std::uint64_t bytes) {
+    const auto tenths=bytes/(1024*1024)*10/1024;
+    return std::to_string(tenths/10)+'.'+std::to_string(tenths%10)+" GiB";
+}
+bool installHash(const std::string& value) {
+    return value.size()==64 && std::all_of(value.begin(),value.end(),[](unsigned char c){ return std::isxdigit(c); });
+}
+// Created only from a matching read-only backend plan. The final button uses
+// this exact snapshot; no editable confirmation or shell interpolation exists.
+struct InstallReview {
+    static constexpr std::size_t Install=5,Cancel=6;
+    InstallSource source; InstallTarget target; std::uint64_t dataBytes=0;
+    static std::optional<InstallReview> fromPlan(const std::string& output,const InstallSource& source,const InstallTarget& target) {
+        const auto data=jsonNumber(output,"data_proposed_bytes");
+        if(!source.path.starts_with('/') || !installHash(source.hash) || !target.path.starts_with("/dev/") || target.id.empty() ||
+           target.id.find_first_of("\r\n\0",0,3)!=std::string::npos ||
+           jsonString(output,"event")!="plan" || jsonString(output,"confirmation")!="ERASE "+target.id ||
+           jsonString(output,"target")!=target.path || jsonString(output,"source_sha256")!=source.hash ||
+           jsonNumber(output,"data_original_bytes")!=4ULL*1024*1024*1024 || data<=4ULL*1024*1024*1024 || data>=target.bytes) return std::nullopt;
+        return InstallReview{source,target,data};
+    }
+    std::vector<std::string> rows() const {
+        return {"Disk: "+target.model+" ("+target.path+")",
+            "Capacity: "+installCapacity(target.bytes)+" | Game storage: "+installCapacity(dataBytes),
+            "Disk identity: "+target.id,
+            "EVERY FILE, APP AND PARTITION ON THIS DISK WILL BE ERASED",
+            "Keep the USB and power connected until installation finishes",
+            "Install 403 OS - erase everything on this disk","Cancel"};
+    }
+    std::vector<std::string> executeArguments(std::size_t choice) const {
+        if(choice!=Install) return {};
+        return {"surface-install-device","--execute","--target",target.path,"--source",source.path,
+            "--expected-target-id",target.id,"--expected-source-sha256",source.hash,"--confirm","ERASE "+target.id};
+    }
+};
+std::string installProgress(const std::string& text) {
+    const auto output=lines(text);
+    for(auto line=output.rbegin();line!=output.rend();++line) {
+        const auto phase=jsonString(*line,"phase"); if(phase.empty()) continue;
+        const auto percent=std::min<std::uint64_t>(100,jsonNumber(*line,"percent"));
+        if(phase=="verify-source") return "Step 1 of 4: Checking installer image - "+std::to_string(percent)+"%";
+        if(phase=="copy-image") return "Step 2 of 4: Installing 403 OS - "+std::to_string(percent)+"%";
+        if(phase=="verify-target") return "Step 3 of 4: Verifying the installed copy - "+std::to_string(percent)+"%";
+        return "Step 4 of 4: Expanding and verifying game storage";
+    }
+    return "Step 1 of 4: Checking installer image";
+}
 // One bounded process group at a time. Stdout/stderr remain in memory; command
 // arguments and Wi-Fi credentials are never printed or written into UI logs.
 struct Command {
@@ -335,13 +385,14 @@ struct Command {
 using control_detail::Command;
 
 struct ControlCenter::Impl {
-    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,InstallConfirm,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle };
-    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister };
+    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle };
+    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert };
     enum class Power { None,Reboot,Suspend };
+    struct DisplayMode { std::string output,mode; };
     struct Network { std::string ssid,flags; int signal=0; };
     struct Device { std::string mac,name; };
-    struct InstallSource { std::string path,hash; std::uint64_t bytes=0; };
-    struct InstallTarget { std::string path,id,model; std::uint64_t bytes=0; };
+    using InstallSource=control_detail::InstallSource;
+    using InstallTarget=control_detail::InstallTarget;
     struct PokeRom { std::string path,title,code; std::uint64_t bytes=0; };
     struct WindowsApp { std::string path,title,runner; };
     enum class InstallStage { Disks,Review,Running,Done };
@@ -361,9 +412,12 @@ struct ControlCenter::Impl {
     std::optional<std::string> search;
     std::vector<InstallSource> installSources;
     std::vector<InstallTarget> installTargets;
+    std::vector<std::string> installUnavailable;
     std::size_t installSourceIndex=0;
     InstallSource plannedSource; InstallTarget plannedTarget;
     std::uint64_t plannedDataBytes=0;
+    std::optional<control_detail::InstallReview> installReview;
+    std::string installStep;
     InstallStage installStage=InstallStage::Disks;
     bool installPowerConfirm=false;
     bool pokeInstalled=false,pokeConfirm=false;
@@ -377,6 +431,11 @@ struct ControlCenter::Impl {
     std::string windowsPath,windowsTitle,windowsRunner="wine";
     std::vector<WindowsApp> windowsApps;
     std::string dw3Source="/library/roms/DW3 Online";
+    std::vector<DisplayMode> displayModes;
+    DisplayMode displayChoice;
+    bool displayTrial=false,displayReview=false;
+    unsigned displayRemaining=0;
+    Clock::time_point displayRefresh{};
 
     Impl() {
         keyboard(); host=readLine("/data/home/moonlight-host"); if(!validHost(host)) host.clear();
@@ -388,6 +447,7 @@ struct ControlCenter::Impl {
         if(profile>>size>>fps>>rate && resolution(size,w,h) && (fps==30 || fps==60) && (rate==0 || rate==5000 || rate==10000 || rate==20000 || rate==40000)) {
             moonWidth=w; moonHeight=h; moonFps=fps; moonBitrate=rate;
         }
+        if(isImage()) start(Job::DisplayStartup,{"surface-display","--status"},"Reading display configuration");
     }
     void keyboard() {
         view.keyboard.clear();
@@ -435,7 +495,17 @@ struct ControlCenter::Impl {
             if(powerConfirm!=Power::None) view.rows={powerConfirm==Power::Reboot?"Confirm restart":"Confirm suspend","Cancel"};
             else if(systemInfo) {
                 view.rows={"Model: "+readLine("/sys/class/dmi/id/product_name"),"Kernel: "+readLine("/proc/sys/kernel/osrelease"),readLine("/proc/meminfo"),storage("/data"),storage("/"),fs::is_regular_file("/data/config/gamecontrollerdb.txt")?"Saved controller mappings: /data/config/gamecontrollerdb.txt":"Controller mappings: SDL defaults; no custom mappings saved","Return to Settings"};
-            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install to internal storage","System and storage information","Restart device","Suspend device","Configure controller buttons","Windows applications"}; break;
+            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install to internal storage","System and storage information","Restart device","Suspend device","Configure controller buttons","Windows applications","Display resolution"}; break;
+        case PanelKind::Display:
+            view.title="Display resolution";
+            if(displayTrial) view.rows={"Keep this resolution ("+std::to_string(displayRemaining)+" seconds)","Restore previous resolution"};
+            else if(displayReview) view.rows={"Apply "+displayChoice.output+" "+displayChoice.mode,"Cancel"};
+            else {
+                view.rows={"Refresh display modes"};
+                for(const auto& mode:displayModes) view.rows.push_back("Use "+mode.output+" "+(mode.mode=="preferred"?"native / preferred":mode.mode));
+                if(displayModes.empty()) view.rows.emplace_back("No connected display modes detected");
+            }
+            break;
         case PanelKind::Network:
             view.title="Wi-Fi and network";
             view.rows={"Scan for Wi-Fi networks","Connect to hidden WPA2 network","Disconnect Wi-Fi","Forget current network"};
@@ -459,18 +529,19 @@ struct ControlCenter::Impl {
             for(const auto& app:apps) view.rows.push_back("Stream: "+app);
             break;
         case PanelKind::Install:
-            view.title="Install Surface OS";
-            if(installStage==InstallStage::Review) {
-                view.rows={"Target: "+plannedTarget.model+" ("+plannedTarget.path+")","Disk: "+std::to_string(plannedTarget.bytes/(1024*1024))+" MiB | DATA grows from 4096 to "+std::to_string(plannedDataBytes/(1024*1024))+" MiB","Stable ID: "+plannedTarget.id,"Image SHA256: "+plannedSource.hash,"ALL FILES AND PARTITIONS ON THIS DISK WILL BE ERASED","Type exact confirmation to install","Back to disk selection"};
-            } else if(installStage==InstallStage::Running) view.rows={"Verifying and installing the reviewed image","Keep power connected and the source USB inserted","This operation must finish before leaving the installer"};
+            view.title=installStage==InstallStage::Review?"Review installation":installStage==InstallStage::Running?"Installing 403 OS":installStage==InstallStage::Done?"403 OS installed":"Install 403 OS - choose a disk";
+            if(installStage==InstallStage::Review && installReview) {
+                view.rows=installReview->rows();
+            } else if(installStage==InstallStage::Running) view.rows={installStep,"Target: "+plannedTarget.model+" ("+plannedTarget.path+")","Keep power connected and the USB inserted","Installation will finish after all verification steps"};
             else if(installStage==InstallStage::Done) {
                 if(installPowerConfirm) view.rows={"Confirm power off","Cancel"};
                 else view.rows={"Power off, then remove USB before powering on","Return to HOME"};
             }
             else {
-                view.rows={"Refresh disks and installer media",installSources.empty()?"No verified staged installer image found":"Source: "+installSources[installSourceIndex].path+" (select to change)"};
-                for(const auto& target:installTargets) view.rows.push_back(target.model+" | "+target.path+" | "+std::to_string(target.bytes)+" bytes | "+target.id);
-                if(installTargets.empty()) view.rows.emplace_back("No eligible unused internal disk detected");
+                view.rows={"Refresh disks and installer USB",installSources.empty()?"Installer image not found on this USB":"Installer USB ready"+std::string(installSources.size()>1?" (select to change source)":"")};
+                for(const auto& target:installTargets) view.rows.push_back("Install on "+target.model+" | "+control_detail::installCapacity(target.bytes)+" | "+target.path);
+                if(installTargets.empty()) view.rows.emplace_back("No installable internal disk found - see details below");
+                for(const auto& reason:installUnavailable) view.rows.push_back(reason);
             }
             break;
         case PanelKind::PokeMMO:
@@ -510,16 +581,18 @@ struct ControlCenter::Impl {
     void open(PanelKind kind) {
         if(command.running() && job==Job::InstallExecute) { view.status="Installation is active; keep power connected until verification finishes"; return; }
         command.cancel(); job=delayed=Job::None; cancelEdit(); panel=kind; opened=true; returnSettings=false;
-        view={}; keyboard(); btDetail=false; logoutConfirm=false; systemInfo=false; protonConfirm=false; powerConfirm=Power::None; interface=wifiInterface(); rows();
+        view={}; keyboard(); btDetail=false; logoutConfirm=false; systemInfo=false; protonConfirm=false; displayReview=false; powerConfirm=Power::None; interface=wifiInterface(); rows();
         if(kind==PanelKind::Settings) start(Job::Mixer,{"amixer","scontrols"},"Reading audio controls");
-        else if(kind==PanelKind::Network) {
+        else if(kind==PanelKind::Display) {
+            if(allowed()) start(Job::DisplayStatus,{"surface-display","--status"},"Reading connected display modes");
+        } else if(kind==PanelKind::Network) {
             if(interface.empty()) view.status="No Wi-Fi radio is visible to the kernel; wired networking may still be available";
             else start(Job::WpaStatus,wpa({"status"}),"Reading Wi-Fi association");
         } else if(kind==PanelKind::Bluetooth) start(Job::BtShow,{"bluetoothctl","show"},"Detecting Bluetooth adapter");
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
-            installStage=InstallStage::Disks; installPowerConfirm=false; rows();
+            installStage=InstallStage::Disks; installPowerConfirm=false; installReview.reset(); rows();
             mutate(Job::InstallList,{"surface-install-device","--list"},"Checking unused internal disks and read-only installer media",90);
         } else if(kind==PanelKind::PokeMMO) {
             pokeConfirm=pokeRomConfirm=false; pokeInstalled=fs::is_regular_file("/data/apps/pokemmo/client/PokeMMO.sh") && access("/data/apps/pokemmo/jre/bin/java",X_OK)==0; rows();
@@ -611,6 +684,20 @@ struct ControlCenter::Impl {
                 if(program.empty()) view.status="The SDL controller mapping wizard is not installed in this image";
                 else launch=std::vector<std::string>{program};
             } else if(choice==15) { open(PanelKind::Windows); returnSettings=true; }
+            else if(choice==16) { open(PanelKind::Display); returnSettings=true; }
+            break;
+        case PanelKind::Display:
+            if(displayTrial) mutate(choice==0?Job::DisplayConfirm:Job::DisplayRevert,{"surface-display",choice==0?"--confirm":"--revert"},choice==0?"Saving display resolution":"Restoring previous display resolution");
+            else if(displayReview) {
+                displayReview=false; view.selected=0; rows();
+                if(choice==0) mutate(Job::DisplaySet,{"surface-display","--set",displayChoice.output,displayChoice.mode},"Applying resolution; HOME will restart. Confirm the new display within 45 seconds");
+                else view.status="Resolution change cancelled";
+            } else if(choice==0) {
+                if(allowed()) start(Job::DisplayStatus,{"surface-display","--status"},"Reading connected display modes");
+            } else if(choice-1<displayModes.size()) {
+                displayChoice=displayModes[choice-1]; displayReview=true; view.selected=1; rows();
+                view.status="Applying closes running applications and restarts HOME. Keep the new resolution within 45 seconds, or the previous mode returns automatically";
+            }
             break;
         case PanelKind::Network:
             if(choice==0) scanWifi();
@@ -687,13 +774,22 @@ struct ControlCenter::Impl {
                 if(choice==0) mutate(Job::InstallList,{"surface-install-device","--list"},"Checking unused internal disks and read-only installer media",90);
                 else if(choice==1 && !installSources.empty()) { installSourceIndex=(installSourceIndex+1)%installSources.size(); rows(); }
                 else if(choice>=2 && choice-2<installTargets.size()) {
-                    if(installSources.empty()) { view.status="No staged surface-go.img plus trusted SHA256 sidecar is available on installer media"; break; }
+                    if(installSources.empty()) { view.status="This USB has no verified installer image. Boot an updated 403 OS installer USB and try Refresh"; break; }
+                    installReview.reset();
                     plannedTarget=installTargets[choice-2]; plannedSource=installSources[installSourceIndex];
                     mutate(Job::InstallPlan,{"surface-install-device","--plan","--target",plannedTarget.path,"--source",plannedSource.path,"--expected-target-id",plannedTarget.id,"--expected-source-sha256",plannedSource.hash},"Preparing a read-only installation review",30);
+                } else {
+                    const auto unavailableBegin=2+installTargets.size()+(installTargets.empty()?1:0);
+                    if(choice>=unavailableBegin && choice-unavailableBegin<installUnavailable.size())
+                        view.status=installUnavailable[choice-unavailableBegin]+". Mounted or read-only storage cannot be erased; boot from the installer USB and refresh after resolving the reported condition";
                 }
             } else if(installStage==InstallStage::Review) {
-                if(choice==5) beginEdit(Edit::InstallConfirm,"Type exactly: ERASE "+plannedTarget.id+" | This permanently erases the reviewed internal disk");
-                else if(choice==6) { installStage=InstallStage::Disks; view.selected=0; rows(); }
+                if(choice==control_detail::InstallReview::Install && installReview) {
+                    auto arguments=installReview->executeArguments(choice);
+                    if(mutate(Job::InstallExecute,std::move(arguments),"Checking the full installer image before erasing the selected disk",3600)) {
+                        installStage=InstallStage::Running; installStep=control_detail::installProgress({}); view.selected=0; view.critical=true; rows();
+                    }
+                } else if(choice==control_detail::InstallReview::Cancel) { installReview.reset(); installStage=InstallStage::Disks; view.selected=0; rows(); view.status="Installation cancelled. No disk was erased"; }
             } else if(installStage==InstallStage::Done) {
                 if(installPowerConfirm) {
                     installPowerConfirm=false; view.selected=1; rows();
@@ -786,14 +882,52 @@ struct ControlCenter::Impl {
         const bool failed=output.find("FAIL")!=std::string::npos || output.find("Failed")!=std::string::npos;
         const auto diagnostic=completedJob==Job::WpaConfigure?"Private Wi-Fi operation failed (command output suppressed)":brief(output);
         if(!ok && (completedJob==Job::InstallList || completedJob==Job::InstallPlan || completedJob==Job::InstallExecute)) {
+            std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout);
             const auto list=lines(output); const auto message=list.empty()?std::string{}:jsonString(list.back(),"message");
             view.status="Installer stopped: "+(message.empty()?diagnostic:message);
-            if(completedJob==Job::InstallExecute) { installStage=InstallStage::Disks; rows(); view.status+=" | Do not boot the target until installation has completed successfully"; }
+            installReview.reset();
+            if(completedJob==Job::InstallExecute) { installStage=InstallStage::Disks; rows(); view.status+=" | Keep the USB connected. Refresh and retry; do not boot the target until installation succeeds"; }
             return;
         }
         if(!ok && completedJob==Job::WindowsSetup) { const auto list=lines(output); const auto message=list.empty()?std::string{}:jsonString(list.back(),"message"); view.status="Proton setup stopped: "+(message.empty()?diagnostic:message); return; }
         if(!ok && completedJob!=Job::TailStatus && completedJob!=Job::PokeStatus && completedJob!=Job::DW3Status && completedJob!=Job::MoonDiscover && completedJob!=Job::LibraryVolumes) { view.status=(code==124?"Operation timed out: ":"Operation failed: ")+diagnostic; return; }
         switch(completedJob) {
+        case Job::DisplayStartup:
+        case Job::DisplayStatus: {
+            if(jsonString(output,"event")!="display-status") { if(completedJob==Job::DisplayStatus) view.status="Display service returned an invalid inventory"; break; }
+            displayModes.clear();
+            std::string current;
+            for(const auto& item:jsonObjects(output,"outputs")) {
+                const auto name=jsonString(item,"name");
+                if(name.empty() || name.size()>64) continue;
+                for(const auto& mode:jsonStrings(item,"modes")) {
+                    unsigned w=0,h=0;
+                    if(mode=="preferred" || resolution(mode,w,h)) displayModes.push_back({name,mode});
+                    if(displayModes.size()>=128) break;
+                }
+                if(!current.empty()) current+=" | ";
+                current+=name+" "+jsonString(item,"current");
+            }
+            displayTrial=jsonBool(output,"trial_active");
+            displayRemaining=static_cast<unsigned>(jsonNumber(output,"remaining_seconds"));
+            displayRefresh=Clock::now()+std::chrono::seconds(1);
+            if(completedJob==Job::DisplayStartup) { std::printf("SURFACE_DISPLAY_STARTUP %s\n",output.c_str()); std::fflush(stdout); }
+            if(displayTrial) {
+                panel=PanelKind::Display; opened=true; displayReview=false;
+                view.status="Keep this resolution to save it. The previous mode returns automatically if time runs out";
+            } else if(completedJob==Job::DisplayStatus) view.status=current.empty()?"No connected display found":"Current: "+current+" | Choose a mode, then Apply";
+            if(panel==PanelKind::Display) rows();
+            if(panel==PanelKind::Display && opened) {
+                std::printf("SURFACE_DISPLAY_VIEW %s\n",output.c_str()); std::fflush(stdout);
+            }
+            break;
+        }
+        case Job::DisplaySet:
+        case Job::DisplayConfirm:
+        case Job::DisplayRevert:
+            displayReview=false;
+            start(Job::DisplayStatus,{"surface-display","--status"},"Refreshing display configuration");
+            break;
         case Job::Mixer:
             if(output.find("'Master'")!=std::string::npos) mixer="Master";
             else if(output.find("'PCM'")!=std::string::npos) mixer="PCM";
@@ -925,28 +1059,39 @@ struct ControlCenter::Impl {
             }
             rows(); view.status=apps.empty()?"No applications returned; verify host reachability and pairing: "+diagnostic:"Select an application to start a real H.264 stream"; break;
         case Job::InstallList: {
-            installSources.clear(); installTargets.clear(); installSourceIndex=0; installStage=InstallStage::Disks;
+            if(jsonString(output,"event")!="list") { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="The installer returned an invalid disk list. Choose Refresh to try again"; break; }
+            installSources.clear(); installTargets.clear(); installUnavailable.clear(); installReview.reset(); installSourceIndex=0; installStage=InstallStage::Disks;
             for(const auto& item:jsonObjects(output,"sources")) {
                 const auto path=jsonString(item,"path"),hash=jsonString(item,"sha256");
-                if(path.starts_with('/') && hash.size()==64) installSources.push_back({path,hash,jsonNumber(item,"bytes")});
+                if(path.starts_with('/') && control_detail::installHash(hash)) installSources.push_back({path,hash,jsonNumber(item,"bytes")});
             }
             std::string excluded;
             for(const auto& item:jsonObjects(output,"targets")) {
                 if(jsonBool(item,"eligible")) installTargets.push_back({jsonString(item,"device"),jsonString(item,"stable_id"),jsonString(item,"model"),jsonNumber(item,"bytes")});
-                else if(excluded.empty()) excluded=jsonString(item,"reason");
+                else if(excluded.size()<350) {
+                    if(!excluded.empty()) excluded+="; ";
+                    excluded+=jsonString(item,"device")+": "+jsonString(item,"reason");
+                }
+                if(!jsonBool(item,"eligible")) installUnavailable.push_back("Unavailable: "+jsonString(item,"device")+" - "+jsonString(item,"reason"));
             }
+            for(const auto& error:jsonStrings(output,"errors")) installUnavailable.push_back("Installer USB: "+error);
+            view.selected=installTargets.empty()?0:2;
             rows();
-            view.status=installSources.empty()?"Staged installer image not found. Installer media needs SurfaceGoGamingOS/surface-go.img and surface-go.img.sha256":installTargets.empty()?"No safe internal target is available. "+excluded:"Select an internal disk to review. USB/boot/mounted disks are excluded. No disk has been erased";
+            std::printf("SURFACE_INSTALL_UI_LIST sources=%zu targets=%zu\n",installSources.size(),installTargets.size()); std::fflush(stdout);
+            view.status=installSources.empty()?"Installer image missing. Boot an updated 403 OS installer USB, then choose Refresh":installTargets.empty()?"No disk can be installed safely. "+excluded+". For a mounted or read-only internal disk, restart from the USB and try Refresh":"Choose the internal disk to install on. You will review it before erasing. The USB and active disks are protected";
             break;
         }
         case Job::InstallPlan:
-            plannedDataBytes=jsonNumber(output,"data_proposed_bytes");
-            if(jsonString(output,"event")!="plan" || jsonString(output,"confirmation")!="ERASE "+plannedTarget.id || jsonString(output,"target")!=plannedTarget.path || jsonString(output,"source_sha256")!=plannedSource.hash || jsonNumber(output,"data_original_bytes")!=4ULL*1024*1024*1024 || plannedDataBytes<=4ULL*1024*1024*1024 || plannedDataBytes>=plannedTarget.bytes) { view.status="Installer returned an invalid or changed review; refresh storage devices"; break; }
-            installStage=InstallStage::Review; view.selected=6; rows();
-            view.status="Review the disk, checksum and DATA capacity. Every existing file on this internal disk will be erased. DATA expands before its first mount. USB installer media is preserved"; break;
+            installReview=control_detail::InstallReview::fromPlan(output,plannedSource,plannedTarget);
+            if(!installReview) { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="The disk or installer changed during review. Choose Refresh and select the disk again"; break; }
+            plannedDataBytes=installReview->dataBytes;
+            installStage=InstallStage::Review; view.selected=control_detail::InstallReview::Cancel; rows();
+            std::printf("SURFACE_INSTALL_UI_REVIEW target=%s cancel_selected=%d\n",installReview->target.id.c_str(),view.selected==control_detail::InstallReview::Cancel?1:0); std::fflush(stdout);
+            view.status="Back up anything you need before continuing. Install 403 OS erases the entire selected disk. Cancel leaves it unchanged. No keyboard is needed"; break;
         case Job::InstallExecute: {
             const auto list=lines(output);
-            if(list.empty() || jsonString(list.back(),"event")!="complete" || !jsonBool(list.back(),"data_expansion_verified") || jsonNumber(list.back(),"data_actual_bytes")!=plannedDataBytes) { view.status="Installation did not report verified copy and DATA expansion. Do not boot the target"; installStage=InstallStage::Disks; rows(); break; }
+            if(list.empty() || jsonString(list.back(),"event")!="complete" || !jsonBool(list.back(),"data_expansion_verified") || jsonNumber(list.back(),"data_actual_bytes")!=plannedDataBytes) { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="Installation did not report verified copy and DATA expansion. Do not boot the target"; installStage=InstallStage::Disks; rows(); break; }
+            std::printf("SURFACE_INSTALL_UI_COMPLETE bytes=%llu\n",static_cast<unsigned long long>(plannedDataBytes)); std::fflush(stdout);
             installStage=InstallStage::Done; installPowerConfirm=false; view.selected=1; rows(); view.status="Image copy, readback, GPT and DATA expansion verified. Power off, remove USB boot media after shutdown, then power on to boot internal storage"; break;
         }
         case Job::InstallPoweroff: view.status="Power off requested. After shutdown, remove USB boot media, then power on"; break;
@@ -1036,6 +1181,8 @@ struct ControlCenter::Impl {
     }
     void update() {
         command.reap();
+        if(opened && panel==PanelKind::Display && displayTrial && !command.running() && Clock::now()>=displayRefresh)
+            start(Job::DisplayStatus,{"surface-display","--status"},"Checking resolution confirmation time");
         if(delayed!=Job::None && Clock::now()>=wake && !command.running()) {
             const auto next=delayed; delayed=Job::None;
             start(next,wpa({next==Job::WpaResults?"scan_results":"status"}),next==Job::WpaResults?"Reading Wi-Fi scan results":"Checking Wi-Fi association");
@@ -1043,11 +1190,8 @@ struct ControlCenter::Impl {
         if(command.running()) {
             const auto result=command.update();
             if(job==Job::InstallExecute) {
-                const auto list=lines(command.text);
-                if(!list.empty()) {
-                    const auto phase=jsonString(list.back(),"phase");
-                    if(!phase.empty()) view.status="Install: "+phase+" "+std::to_string(jsonNumber(list.back(),"percent"))+"% | Keep power connected";
-                }
+                installStep=control_detail::installProgress(command.text); rows();
+                view.status=installStep+". Keep the USB and power connected. The disk will be checked before installation is marked complete";
             } else if(job==Job::WindowsSetup) {
                 const auto list=lines(command.text); if(!list.empty()) { const auto message=jsonString(list.back(),"message"); if(!message.empty()) view.status=message; }
             } else if(job==Job::PokeInstall || job==Job::LibraryScan || job==Job::DW3Import || job==Job::PokeImport) {
@@ -1103,12 +1247,6 @@ struct ControlCenter::Impl {
             if(!value.starts_with("https://") && !value.starts_with("http://")) view.status="Use an https:// or http:// URL";
             else { if(allowed()) writePrivate("/data/home/browser-url",value+'\n'); browser(value); }
             break;
-        case Edit::InstallConfirm:
-            if(value!="ERASE "+plannedTarget.id || plannedTarget.id.empty()) { view.status="Confirmation did not match. No installation was started"; break; }
-            if(mutate(Job::InstallExecute,{"surface-install-device","--execute","--target",plannedTarget.path,"--source",plannedSource.path,"--expected-target-id",plannedTarget.id,"--expected-source-sha256",plannedSource.hash,"--confirm",value},"Verifying the full source checksum before opening the target writable",3600)) {
-                installStage=InstallStage::Running; view.critical=true; rows();
-            }
-            break;
         case Edit::LibrarySource:
             if(value.empty() || value.front()!='/') { view.status="Use the absolute path to a mounted game folder"; break; }
             if(!allowed()) break;
@@ -1159,13 +1297,15 @@ struct ControlCenter::Impl {
         if(action==Action::Back) {
             if(command.running() && job==Job::InstallExecute) { view.status="Installation is active; keep power connected until verification finishes"; }
             else if(command.running() || delayed!=Job::None) { command.cancel(); job=delayed=Job::None; view.busy=false; view.status="Operation cancelled"; }
+            else if(panel==PanelKind::Display && displayTrial) mutate(Job::DisplayRevert,{"surface-display","--revert"},"Restoring previous resolution");
+            else if(panel==PanelKind::Display && displayReview) { displayReview=false; view.selected=0; rows(); view.status="Resolution change cancelled"; }
             else if(panel==PanelKind::Settings && (systemInfo || powerConfirm!=Power::None)) { systemInfo=false; powerConfirm=Power::None; view.selected=0; rows(); view.status="Returned to Settings"; }
             else if(panel==PanelKind::Tailscale && logoutConfirm) { logoutConfirm=false; view.selected=2; rows(); view.status="Sign out cancelled"; }
             else if(panel==PanelKind::PokeMMO && pokeConfirm) { pokeConfirm=false; view.selected=1; rows(); view.status="Installation cancelled"; }
             else if(panel==PanelKind::PokeMMO && pokeRomConfirm) { pokeRomConfirm=false; view.selected=3; rows(); view.status="ROM import cancelled"; }
             else if(panel==PanelKind::DW3 && dw3Confirm) { dw3Confirm=false; view.selected=2; rows(); view.status="Import cancelled"; }
             else if((panel==PanelKind::DW3 || panel==PanelKind::Windows) && protonConfirm) { protonConfirm=false; view.selected=panel==PanelKind::DW3?6:4; rows(); view.status="Proton setup cancelled"; }
-            else if(panel==PanelKind::Install && installStage==InstallStage::Review) { installStage=InstallStage::Disks; view.selected=0; rows(); }
+            else if(panel==PanelKind::Install && installStage==InstallStage::Review) { installReview.reset(); installStage=InstallStage::Disks; view.selected=0; rows(); view.status="Installation cancelled. No disk was erased"; }
             else if(panel==PanelKind::Install && installPowerConfirm) { installPowerConfirm=false; view.selected=1; rows(); view.status="Power off cancelled. Keep the running USB boot media connected"; }
             else if(btDetail && panel==PanelKind::Bluetooth) { btDetail=false; view.selected=0; rows(); }
             else if(returnSettings) open(PanelKind::Settings);

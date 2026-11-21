@@ -32,4 +32,5 @@ install -D -m 0644 "$board/../../../services/dw3/dw3-setup.py" "$TARGET_DIR/usr/
 install -D -m 0755 "$board/../../../services/library-volumes.py" "$TARGET_DIR/usr/bin/surface-library-volumes"
 install -D -m 0755 "$board/../../../services/windows-runner.py" "$TARGET_DIR/usr/bin/surface-windows-runner"
 install -D -m 0755 "$board/../../../services/grow-data.py" "$TARGET_DIR/usr/sbin/surface-grow-data"
+install -D -m 0755 "$board/../../../services/display.py" "$TARGET_DIR/usr/sbin/surface-display"
 grep -q SURFACE_DATA "$TARGET_DIR/etc/fstab" || printf '/dev/disk/by-partuuid/8b4a530e-d6d4-4e69-9307-310000000002 /data ext4 defaults,noauto 0 2 # SURFACE_DATA\n' >> "$TARGET_DIR/etc/fstab"

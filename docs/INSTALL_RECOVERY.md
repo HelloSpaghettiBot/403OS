@@ -93,15 +93,16 @@ or preserve-DATA mode. Back up first and use only an image whose matching
 live/install tests have completed. The current revised image is still under
 validation.
 
-1. In HOME, open Settings → **Install to internal storage** and refresh devices.
+1. In the live HOME, choose **Install 403 OS**, or open Settings → **Install to internal storage**.
    Review the intended internal whole disk's model, stable ID and capacity.
    The installer requires at least 60,000,000,000 bytes and 512-byte sectors.
    USB/removable, boot/root, mounted and active-swap targets are excluded.
 2. Review the discovered embedded source filename/SHA-256, selected target,
    destructive warning and proposed DATA capacity. The source must be on
    storage separate from the target.
-3. Type exactly `ERASE ` followed by the stable ID displayed for that disk.
-   Cancel if the identity, source checksum or erase scope is wrong.
+3. Review the disk and erase warning, then choose **Install 403 OS — erase everything on this disk**.
+   Cancel is selected by default. No keyboard or serial-number typing is required;
+   the backend still verifies the reviewed hardware identity and source checksum.
 4. Keep power connected through source verification, copying, complete
    readback, GPT verification and DATA expansion. Wait for the final verified
    completion result; progress alone is not completion.

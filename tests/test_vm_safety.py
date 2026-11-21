@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import unittest
 import subprocess
+from contextlib import redirect_stderr
+import io
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("vm", ROOT / "scripts/vm.py")
@@ -10,6 +12,19 @@ spec.loader.exec_module(vm)
 
 
 class DiskSafetyTests(unittest.TestCase):
+    def test_display_trial_test_requires_explicit_installed_disk(self):
+        for arguments in (['live','--test-display'],['install','--test-display'],['test','--test-display']):
+            with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                vm.parse_arguments(arguments)
+        args=vm.parse_arguments(['test','--disk',str(vm.ARTIFACTS/'installed.qcow2'),'--test-display'])
+        self.assertTrue(args.test_display)
+
+    def test_click_installer_runs_only_against_new_disposable_live_target(self):
+        for arguments in (['test','--test-install-ui'],['install','--test-install-ui'],['live','--test-install-ui','--visible','--keep-open']):
+            with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                vm.parse_arguments(arguments)
+        self.assertTrue(vm.parse_arguments(['live','--test-install-ui']).test_install_ui)
+
     def test_devices_and_outside_files_rejected(self):
         for path in ["/dev/sda", "/dev/null", "/tmp/example.qcow2", vm.ARTIFACTS / "../escape.qcow2",
                      vm.ARTIFACTS / "disk,file=other.qcow2"]:

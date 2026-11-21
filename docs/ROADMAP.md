@@ -38,3 +38,14 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [ ] Additional per-system game compatibility and measured GameCube performance.
 - [ ] Legal-info review, independent clean build and backup/recovery validation.
 - [ ] Release only after VM and separate hardware acceptance gates pass.
+
+## Hardware feedback and next delivery
+
+Priority: complete the click-through internal installer, validate it against a
+disposable SATA disk, and deliver a private USB with the complete supplied game
+library. Personal games and Wi-Fi profiles remain outside public images/Git.
+
+After that delivery: investigate the reported nonworking Surface touchscreen,
+add sensor-driven orientation changes, password-protected user profiles with
+the initial administrator account, and test Ipega controllers. The root-account
+request requires a defined first-run/login flow; it is not implemented yet.

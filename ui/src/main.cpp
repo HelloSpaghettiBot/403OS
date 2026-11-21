@@ -7,6 +7,7 @@
 #include "surface/control_center.hpp"
 #include "surface/global_home.hpp"
 #include <cstdlib>
+#include <csignal>
 #include <memory>
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -22,6 +23,8 @@
 
 using namespace surface;
 namespace {
+volatile std::sig_atomic_t session_stop=0;
+void stop_session(int) { session_stop=1; }
 std::optional<Action> action(const SDL_Event& event) {
     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
         switch(event.key.key) {
@@ -135,6 +138,7 @@ void activate(Model& model, Process& child, Session& session) {
         model.message="This control is not implemented in the foundation image. See docs/STATUS.md."; return;
     }
     if(model.selected().id.starts_with("system:")) { session.show(model,Page::Games,model.selected().system); return; }
+    if(model.selected().id=="install") { session.controls.open(PanelKind::Install); return; }
     if(model.selected().id=="library") {session.show(model,Page::Games);return;}
     if(model.selected().id=="favorites") {session.show(model,Page::Favorites);return;}
     if(model.selected().id=="recent") {session.show(model,Page::Recent);return;}
@@ -175,6 +179,8 @@ void memory_report(const char* prefix) {
 }
 
 int main(int argc, char** argv) {
+    std::signal(SIGTERM,stop_session);
+    std::signal(SIGINT,stop_session);
     const bool self_test = argc > 1 && std::string(argv[1]) == "--self-test";
     const bool capture = argc > 2 && std::string(argv[1]) == "--screenshot";
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
@@ -194,6 +200,8 @@ int main(int argc, char** argv) {
                  {"windows","Windows applications","Wine and Proton compatibility",""}});
     for(auto& app:model.apps) if(!app.executable.empty() && !std::filesystem::exists(app.executable))
         app.subtitle="Application is not installed";
+    if(std::filesystem::is_regular_file("/data/SurfaceGoGamingOS/surface-go.img"))
+        model.apps.insert(model.apps.begin(),{"install","Install 403 OS","Install to internal storage",""});
     Session session;
     const char* catalog=std::getenv("SURFACE_LIBRARY");
     session.catalog=catalog?catalog:"/data/library/catalog.tsv";
@@ -233,7 +241,7 @@ int main(int argc, char** argv) {
     bool quit=false;
     bool text_input=false;
     std::string control_snapshot;
-    while(!quit) {
+    while(!quit && !session_stop) {
         if(capture && SDL_GetTicks()>1800) {
             draw();
             SDL_Surface* frame=SDL_RenderReadPixels(renderer,nullptr);
@@ -413,6 +421,8 @@ int main(int argc, char** argv) {
             if(++test_step==6) { std::puts("SURFACE_SELF_TEST PASS keyboard gamepad touch overlay power-cancel"); quit=true; }
         }
     }
+    child.stop();
+    while(child.running()) { child.poll(); SDL_Delay(20); }
     for(auto* pad:pads) SDL_CloseGamepad(pad);
     home.reset();
     SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();

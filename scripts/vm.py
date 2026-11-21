@@ -187,7 +187,12 @@ class VM:
             (index / "catalog.tsv").write_text("\n".join(rows)+"\n")
             command += ["-virtfs",f"local,id=games,path={library_root},mount_tag=surface_games,security_model=none,readonly=on,multidevs=remap",
                         "-virtfs",f"local,id=index,path={index},mount_tag=surface_index,security_model=none,readonly=on"]
-        image = ROOT / "output/images/surface-go.img"
+        image = args.image.resolve(strict=True)
+        if args.test_install_ui:
+            ui_disk=directory/'ui-install-target.qcow2'
+            create_disk(ui_disk)
+            command += ['-drive',f'file={ui_disk},if=none,id=uitarget,format=qcow2,discard=unmap,detect-zeroes=unmap',
+                        '-device','ide-hd,drive=uitarget,bus=ide.0,serial=SURFACE_UI_TARGET']
         if install:
             command += ["-drive", f"file={image},if=none,id=media,format=raw,readonly=on",
                         "-device", "virtio-blk-pci,drive=media,serial=SURFACE_MEDIA",
@@ -295,12 +300,114 @@ def create_live_disk(path, image):
     subprocess.run(["qemu-img", "create", "-f", "qcow2", "-F", "raw", "-b", str(image), str(path)], check=True)
 
 
+def display_view(vm, after=0, trial=None, timeout=15):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        for line in reversed(vm.log.read_text(errors='replace')[after:].splitlines()):
+            if line.startswith('SURFACE_DISPLAY_VIEW '):
+                value=json.loads(line.split(' ',1)[1])
+                if trial is None or value['trial_active'] is trial:return value
+        if vm.process.poll() is not None:raise RuntimeError('Guest stopped during display settings test')
+        time.sleep(.1)
+    raise TimeoutError('Display UI did not report the requested state')
+
+
+def exercise_display(vm, width, height):
+    """Operate the real Settings UI and verify scanout, Keep and timed rollback."""
+    def offset():return len(vm.log.read_text(errors='replace'))
+    def size(name):
+        result=struct.unpack('>II',vm.screenshot(name).read_bytes()[16:24])
+        return f'{result[0]}x{result[1]}'
+    def open_settings():
+        start=offset();vm.key('down')
+        vm.wait_for('zone=1',10,after=start)
+        for _ in range(6):vm.key('right')
+        vm.key('ret');time.sleep(1)
+        vm.key('up');vm.key('ret')
+        return display_view(vm,start,False)
+    def apply(view, chosen):
+        modes=[(item['name'],mode) for item in view['outputs'] for mode in item['modes']
+               if mode=='preferred' or all(low<=dimension<=high and dimension%2==0
+                  for dimension,low,high in zip(map(int,mode.split('x')),(320,240),(3840,2160)))]
+        index=modes.index(chosen)+1
+        for _ in range(index):vm.key('down')
+        vm.key('ret');vm.key('up')
+        start=offset();vm.key('ret')
+        vm.wait_for('SURFACE_READY graphics=wayland',30,after=start)
+        trial=display_view(vm,start,True,30)
+        observed=size('display-trial-'+chosen[1]+'.png')
+        if observed!=chosen[1]:raise RuntimeError(f'Resolution trial scanout {observed} != {chosen[1]}')
+        return trial
+    def keep(chosen):
+        start=offset();deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            vm.key('ret')
+            try:view=display_view(vm,start,False,1)
+            except TimeoutError:continue
+            if view['saved']!={'output':chosen[0],'mode':chosen[1]}:
+                raise RuntimeError('Display Keep did not persist the selected mode')
+            return view
+        raise TimeoutError('Keep resolution was not accepted through the UI')
+    view=open_settings();original=f'{width}x{height}'
+    candidates=[(item['name'],mode) for item in view['outputs'] for mode in item['modes']
+                if mode!='preferred' and mode!=original and tuple(map(int,mode.split('x'))) <= (width,height)]
+    chosen=next((item for item in candidates if item[1]=='1280x960'),None)
+    if chosen is None:raise RuntimeError('The VM does not advertise the required lower display test mode')
+    native=(chosen[0],original)
+    apply(view,chosen);view=keep(chosen)
+    vm.screenshot('display-kept.png')
+    trial=apply(view,native)
+    start=offset()
+    vm.wait_for('SURFACE_READY graphics=wayland',65,after=start)
+    if size('display-timeout-restored.png')!=chosen[1]:
+        raise RuntimeError('Unconfirmed resolution did not restore the last kept scanout')
+    view=open_settings()
+    if view['saved']!={'output':chosen[0],'mode':chosen[1]} or view['trial_active']:
+        raise RuntimeError('Timed resolution rollback damaged confirmed persistent settings')
+    apply(view,native);keep(native);vm.key('esc')
+    if size('display-native-restored.png')!=original:raise RuntimeError('Final native resolution was not restored')
+    return {'mode_list_apply_keep':'PASS','timeout_rollback':'PASS','native_restore':'PASS',
+            'trial_mode':chosen[1],'saved_mode':original,'output':chosen[0]}
+
+
+def exercise_install_ui(vm):
+    """Click through the production installer into an explicitly created VM disk."""
+    start=len(vm.log.read_text(errors='replace'))
+    vm.key('down')
+    for _ in range(6):vm.key('right')
+    vm.key('ret');time.sleep(1)
+    for _ in range(10):vm.key('down')
+    vm.key('ret')
+    listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
+    match=re.search(r'SURFACE_INSTALL_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
+    if not match or int(match[1])<1 or int(match[2])!=1:
+        raise RuntimeError('Click installer did not expose exactly one disposable target and a valid source')
+    vm.screenshot('installer-disks.png')
+    start=len(vm.log.read_text(errors='replace'));vm.key('ret')
+    reviewed=vm.wait_for('SURFACE_INSTALL_UI_REVIEW target=',45,after=start)
+    identity=re.search(r'SURFACE_INSTALL_UI_REVIEW target=([^\r\n]+) cancel_selected=1',reviewed[start:])
+    if not identity or not identity[1].endswith('SURFACE_UI_TARGET'):
+        raise RuntimeError('Installer review does not identify the explicitly serialized disposable SATA target')
+    vm.screenshot('installer-review.png')
+    start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
+    vm.wait_for('SURFACE_INSTALL_UI_COMPLETE ',1200,after=start)
+    vm.screenshot('installer-complete.png')
+    # Completion defaults to Return HOME; select Power off, then explicitly
+    # confirm its second Cancel-default review and require real QEMU shutdown.
+    vm.key('up');vm.key('ret');vm.key('up');vm.key('ret');vm.process.wait(timeout=45)
+    if vm.process.returncode!=0:raise RuntimeError('GUI installer did not power off cleanly')
+    return str(vm.directory/'ui-install-target.qcow2')
+
+
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["live", "install", "test"])
     parser.add_argument("--disk", type=Path)
+    parser.add_argument("--image",type=Path,default=ROOT/'output/images/surface-go.img',help="Explicit live/installer image, including private media")
     parser.add_argument("--test-proton", action="store_true",
                         help="Explicit installed-VM Proton/runtime download and Windows command probe; requires --disk")
+    parser.add_argument("--test-display", action="store_true",help="Exercise installed display mode UI, confirmation and timeout rollback")
+    parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
     parser.add_argument("--cpus", type=int, choices=[2, 4], default=4)
     parser.add_argument("--width", type=int, choices=[1280, 1800], default=1800)
@@ -318,6 +425,10 @@ def parse_arguments(argv=None):
         parser.error("--keep-open requires --visible and a live or test boot")
     if args.test_proton and (args.mode != "test" or args.disk is None):
         parser.error("--test-proton requires mode=test and an explicit existing --disk")
+    if args.test_display and (args.mode != "test" or args.disk is None):
+        parser.error("--test-display requires mode=test and an explicit existing --disk")
+    if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
+        parser.error('--test-install-ui requires a disposable live acceptance run')
     return args
 
 
@@ -331,7 +442,8 @@ def main():
                               "gameplay_verified": False}
     vm = None
     try:
-        image = ROOT / "output/images/surface-go.img"
+        image = args.image.resolve(strict=True)
+        if args.image.is_symlink():raise ValueError('Image must not be a symlink')
         if not image.is_file():
             raise FileNotFoundError("Build output/images/surface-go.img first")
         summary["image_sha256"] = hashlib.file_digest(image.open("rb"), "sha256").hexdigest()
@@ -369,6 +481,8 @@ def main():
             summary["browser_close_input"]="QMP Ctrl+W"
             vm.wait_for("SURFACE_APP_CHECK_END",1800 if args.test_proton else 120)
             vm.wait_for("SURFACE_READY graphics=wayland")
+            startup=vm.wait_for('SURFACE_DISPLAY_STARTUP ',15)
+            summary['display_configuration']=json.loads(next(line.split(' ',1)[1] for line in startup.splitlines() if line.startswith('SURFACE_DISPLAY_STARTUP ')))
             vm.wait_for("SURFACE_EFI_PASS")
             summary["checks"]["uefi_graphical_boot"] = "PASS"
             mounts = vm.wait_for("SURFACE_ROOT_MOUNTS_END")
@@ -450,7 +564,17 @@ def main():
             summary["checks"]["browser_home_launch_global_return"]="PASS"
             for _ in range(3):vm.key("left")
             vm.key("up")
-            if args.keep_open:
+            if args.test_display:
+                summary['display_settings_test']=exercise_display(vm,args.width,args.height)
+                summary['checks']['display_apply_confirm_timeout_rollback']='PASS'
+            if args.test_install_ui:
+                summary['ui_installed_disk']=exercise_install_ui(vm)
+                summary['checks']['click_installer_copy_readback_data_growth']='PASS'
+                summary['checks']['ui_clean_poweroff']='PASS'
+                summary['audio_capture']=inspect_audio_capture(directory/'audio.wav')
+                require_audio_evidence(summary['audio_capture'],'SURFACE_AUDIO_PASS' in vm.log.read_text(errors='replace'))
+                summary['checks']['audio_playback']='PASS'
+            elif args.keep_open:
                 vm.key("left")
                 vm.screenshot("demo.png")
                 summary["status"] = "RUNNING"

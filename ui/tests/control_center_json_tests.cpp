@@ -22,5 +22,43 @@ int main() {
     assert(jsonString(objects.front(),"title")=="Pokémon");
     const auto paths=surface::jsonStrings(R"({"mount_paths":["/media/\u96ea","/media/\ud83c\udfae"]})","mount_paths");
     assert((paths==std::vector<std::string>{"/media/雪","/media/🎮"}));
-    std::cout<<"Command JSON Unicode, surrogate, escape, and malformed-input tests pass\n";
+
+    using surface::control_detail::InstallReview;
+    const surface::control_detail::InstallSource source{"/data/SurfaceGoGamingOS/owner $(literal); surface-go.img",std::string(64,'a'),6510628864ULL};
+    const surface::control_detail::InstallTarget target{"/dev/mmcblk0","mmc-SYNTHETIC 64;$(literal)","Synthetic eMMC",64ULL*1024*1024*1024};
+    const auto plan=[&](const std::string& id,const std::string& path,const std::string& hash,std::uint64_t original,std::uint64_t grown) {
+        return "{\"event\":\"plan\",\"confirmation\":\"ERASE "+id+"\",\"target\":\""+path+"\",\"source_sha256\":\""+hash+"\",\"data_original_bytes\":"+std::to_string(original)+",\"data_proposed_bytes\":"+std::to_string(grown)+"}";
+    };
+    const auto validPlan=plan(target.id,target.path,source.hash,4ULL*1024*1024*1024,60ULL*1024*1024*1024);
+    const auto review=InstallReview::fromPlan(validPlan,source,target);
+    assert(review);
+    assert(review->rows().size()==7);
+    assert(review->rows()[InstallReview::Cancel]=="Cancel");
+    assert(review->rows()[InstallReview::Install]=="Install 403 OS - erase everything on this disk");
+    assert(review->rows()[0].find("Synthetic eMMC (/dev/mmcblk0)")!=std::string::npos);
+    assert(review->rows()[1].find("64.0 GiB")!=std::string::npos);
+    assert(review->rows()[1].find("60.0 GiB")!=std::string::npos);
+    for(std::size_t row=0;row<review->rows().size();++row)
+        if(row!=InstallReview::Install) assert(review->executeArguments(row).empty());
+    const auto execute=review->executeArguments(InstallReview::Install);
+    assert((execute==std::vector<std::string>{"surface-install-device","--execute","--target",target.path,
+        "--source",source.path,"--expected-target-id",target.id,"--expected-source-sha256",source.hash,"--confirm","ERASE "+target.id}));
+    // Replaced devices, replaced media and malformed capacity never yield a
+    // clickable destructive review. Shell metacharacters remain literal argv.
+    for(const auto& invalid:{std::string{},plan("changed-device",target.path,source.hash,4ULL*1024*1024*1024,60ULL*1024*1024*1024),
+        plan(target.id,"/dev/changed",source.hash,4ULL*1024*1024*1024,60ULL*1024*1024*1024),
+        plan(target.id,target.path,std::string(64,'b'),4ULL*1024*1024*1024,60ULL*1024*1024*1024),
+        plan(target.id,target.path,source.hash,8ULL*1024*1024*1024,60ULL*1024*1024*1024),
+        plan(target.id,target.path,source.hash,4ULL*1024*1024*1024,4ULL*1024*1024*1024),
+        plan(target.id,target.path,source.hash,4ULL*1024*1024*1024,target.bytes)})
+        assert(!InstallReview::fromPlan(invalid,source,target));
+    auto unidentified=target; unidentified.id.clear();
+    assert(!InstallReview::fromPlan(validPlan,source,unidentified));
+    auto invalidHash=source; invalidHash.hash=std::string(64,'z');
+    assert(!InstallReview::fromPlan(validPlan,invalidHash,target));
+    assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":42}\n{\"phase\":").find("Step 2 of 4: Installing 403 OS - 42%")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"verify-target\",\"percent\":75}").find("Step 3 of 4")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"resize-unmounted-data-filesystem\"}").find("Step 4 of 4")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":999}").find("100%")!=std::string::npos);
+    std::cout<<"Command JSON parsing, reviewed installer buttons, literal confirmation, changed-device refusal, and progress tests pass\n";
 }
