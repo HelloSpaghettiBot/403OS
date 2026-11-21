@@ -18,12 +18,12 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [x] Three detached baseline UEFI boots, DATA/Tailscale persistence and 3 GiB/AHCI.
 - [x] Baseline non-silent virtual audio and UI shutdown.
 - [x] Self-contained outer/base image pipeline with sparse payload readback checks.
-- [x] Recorded suite: 210 Python tests and five native C++ executables.
+- [x] Recorded suite: 222 Python tests and five native C++ executables.
 
 ## Current validation
 
 - [ ] Complete the revised image's live input/framebuffer acceptance.
-- [ ] Validate detected display modes, Apply/Keep, timeout rollback and persistence.
+- [x] Installed-VM display modes, Apply/Keep, 45-second rollback and cold-boot persistence.
 - [ ] Install from the embedded base file and repeat detached cold boots.
 - [ ] Verify current-artifact USB image writing and readback.
 
@@ -39,13 +39,8 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [ ] Legal-info review, independent clean build and backup/recovery validation.
 - [ ] Release only after VM and separate hardware acceptance gates pass.
 
-## Hardware feedback and next delivery
+## Hardware feedback
 
-Priority: complete the click-through internal installer, validate it against a
-disposable SATA disk, and deliver a private USB with the complete supplied game
-library. Personal games and Wi-Fi profiles remain outside public images/Git.
-
-After that delivery: investigate the reported nonworking Surface touchscreen,
-add sensor-driven orientation changes, password-protected user profiles with
-the initial administrator account, and test Ipega controllers. The root-account
-request requires a defined first-run/login flow; it is not implemented yet.
+Investigate the reported nonworking Surface touchscreen, add sensor-driven
+orientation changes and password-protected user profiles, and test Ipega
+controllers. A first-run administrator/login flow remains unimplemented.

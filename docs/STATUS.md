@@ -26,8 +26,14 @@ Tailscale daemon, network and non-silent PCM checks pass in the live VM.
 
 Settings → Display resolution discovers connected DRM modes. Apply starts a
 45-second trial; Keep persists the choice, and timeout restores the previous
-mode. Ten focused backend fixtures pass. Full GUI mode-change/rollback and
-reboot-persistence acceptance remain pending.
+mode. Ten focused backend fixtures pass. Installed SATA run
+`20261120-223547-test` passed actual GUI mode selection, Apply/Keep at
+1280×960, timeout rollback and restoration to 1800×1200. It booted through
+UEFI without installer media; all implemented checks passed, with overall
+status PARTIAL. A separate cold boot, `20261120-224052-test`, verified the
+saved 1800×1200 mode, matching active mode/framebuffer and no pending trial.
+Display persistence is PASS in this installed VM; Surface display hardware
+remains untested.
 
 Reported Surface issues include nonworking touchscreen input and missing
 automatic rotation. Password-protected profiles and Ipega-specific controller
@@ -36,7 +42,6 @@ Proton setup, online-game login/gameplay and enrolled streaming remain separate
 acceptance work. No production-readiness or physical-device installation pass
 is claimed.
 
-Private personalized media is assembled separately under ignored artifacts.
-Public source and base images contain no personal games, Wi-Fi profiles,
-credentials or private device records. See the [VM report](VM_TEST_REPORT.md),
+Public source and base images contain no game files, credentials or private
+device records. See the [VM report](VM_TEST_REPORT.md),
 [installation guide](INSTALL_RECOVERY.md) and [roadmap](ROADMAP.md).

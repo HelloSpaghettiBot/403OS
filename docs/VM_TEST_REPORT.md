@@ -34,10 +34,33 @@ listed above. Historical failures remain in artifacts.
 ## Display and physical limits
 
 The display service has ten passing fixtures for mode discovery, confirmed
-persistence, timed rollback, safe fallback and session restart. Actual GUI
-mode changes and cold-boot persistence still require acceptance. The visible
-SDL backend reached 1800×1200; earlier GTK window geometry changed scanout
-size, and one visible run failed keyboard acknowledgement.
+persistence, timed rollback, safe fallback and session restart.
+
+Installed SATA run `20261120-223547-test` booted through UEFI with 4 GiB RAM
+and four CPUs, without installer media or a direct kernel boot. Actual GUI
+mode discovery and Apply/Keep at 1280×960 passed, an unconfirmed 45-second
+trial rolled back, and restoration to 1800×1200 passed. The combined
+`display_apply_confirm_timeout_rollback` check is PASS. Display persistence
+was then checked in a separate cold boot below.
+
+All implemented checks in that installed run passed, including Tailscale
+state persistence, application/runtime checks, audio and clean UI shutdown;
+there were no FAIL checks. Overall status remains PARTIAL: hardware is
+UNTESTED, interrupted-boot recovery is NOT_RUN, and enrolled streaming is
+BLOCKED.
+
+## Cold-boot display persistence
+
+`20261120-224052-test` cold-booted the same installed SATA disk through UEFI,
+without installer media or a direct kernel boot. The saved `Virtual-1`
+setting was 1800×1200, the active mode and framebuffer both matched, and no
+trial was pending. DATA boot count advanced from two to three and the
+Tailscale state checksum remained identical. These explicit assertions
+passed; there were no FAIL checks and overall status remained PARTIAL.
+
+This verifies saved display-mode persistence in the installed VM. The
+harness's generic `reboot` and `interrupted_boot_recovery` checks remain
+NOT_RUN; Surface hardware remains UNTESTED.
 
 Surface touchscreen input is reported nonfunctional. Automatic orientation,
 password-protected accounts and Ipega controller validation remain work.
@@ -45,5 +68,4 @@ Physical graphics, radios, speakers, battery and suspend are not established
 by VM results. No Surface hardware/install pass is claimed.
 
 All 222 Python tests pass; changed native C++ controls/parser checks pass with
-`-Werror`. Private personalized USB packaging and matching live/readback tests
-are recorded separately and do not change the public base image.
+`-Werror`.

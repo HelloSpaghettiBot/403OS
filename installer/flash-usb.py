@@ -198,7 +198,9 @@ class UDisks:
     def open_exclusive(self, path):
         options = dict(self.options)
         options['flags'] = self.dbus.Int32(os.O_EXCL | os.O_SYNC | os.O_CLOEXEC)
-        return self.interface(path, 'org.freedesktop.UDisks2.Block').OpenDevice('rw', options, timeout=120).take()
+        # Desktop authentication can take longer than the device-open itself.
+        # Identity and capacity are checked again after this returns a handle.
+        return self.interface(path, 'org.freedesktop.UDisks2.Block').OpenDevice('rw', options, timeout=600).take()
 
 
 def validate_fd(fd, disk):

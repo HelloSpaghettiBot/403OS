@@ -300,16 +300,23 @@ def create_live_disk(path, image):
     subprocess.run(["qemu-img", "create", "-f", "qcow2", "-F", "raw", "-b", str(image), str(path)], check=True)
 
 
-def display_view(vm, after=0, trial=None, timeout=15):
+def serial_json(vm, prefix, after=0, predicate=None, timeout=15):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
         for line in reversed(vm.log.read_text(errors='replace')[after:].splitlines()):
-            if line.startswith('SURFACE_DISPLAY_VIEW '):
-                value=json.loads(line.split(' ',1)[1])
-                if trial is None or value['trial_active'] is trial:return value
+            if line.startswith(prefix):
+                # A serial write can be observed before its final bytes arrive.
+                try:value=json.loads(line[len(prefix):])
+                except json.JSONDecodeError:continue
+                if predicate is None or predicate(value):return value
         if vm.process.poll() is not None:raise RuntimeError('Guest stopped during display settings test')
         time.sleep(.1)
     raise TimeoutError('Display UI did not report the requested state')
+
+
+def display_view(vm, after=0, trial=None, timeout=15):
+    return serial_json(vm,'SURFACE_DISPLAY_VIEW ',after,
+                       None if trial is None else lambda value:value['trial_active'] is trial,timeout)
 
 
 def exercise_display(vm, width, height):
@@ -484,8 +491,7 @@ def main():
             summary["browser_close_input"]="QMP Ctrl+W"
             vm.wait_for("SURFACE_APP_CHECK_END",1800 if args.test_proton else 120)
             vm.wait_for("SURFACE_READY graphics=wayland")
-            startup=vm.wait_for('SURFACE_DISPLAY_STARTUP ',15)
-            summary['display_configuration']=json.loads(next(line.split(' ',1)[1] for line in startup.splitlines() if line.startswith('SURFACE_DISPLAY_STARTUP ')))
+            summary['display_configuration']=serial_json(vm,'SURFACE_DISPLAY_STARTUP ',timeout=15)
             vm.wait_for("SURFACE_EFI_PASS")
             summary["checks"]["uefi_graphical_boot"] = "PASS"
             mounts = vm.wait_for("SURFACE_ROOT_MOUNTS_END")

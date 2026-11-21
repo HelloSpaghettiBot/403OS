@@ -4,6 +4,7 @@ import unittest
 import subprocess
 from contextlib import redirect_stderr
 import io
+from unittest.mock import Mock,patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("vm", ROOT / "scripts/vm.py")
@@ -12,6 +13,12 @@ spec.loader.exec_module(vm)
 
 
 class DiskSafetyTests(unittest.TestCase):
+    def test_serial_json_waits_for_complete_record(self):
+        guest=Mock();guest.process.poll.return_value=None
+        guest.log.read_text.side_effect=['SURFACE_DISPLAY_VIEW {"trial_act','SURFACE_DISPLAY_VIEW {"trial_active":true}\n']
+        with patch.object(vm.time,'sleep'):
+            self.assertTrue(vm.display_view(guest,trial=True)['trial_active'])
+
     def test_display_trial_test_requires_explicit_installed_disk(self):
         for arguments in (['live','--test-display'],['install','--test-display'],['test','--test-display']):
             with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
