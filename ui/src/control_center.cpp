@@ -808,7 +808,7 @@ struct ControlCenter::Impl {
             break;
         case PanelKind::Bluetooth:
             if(!btDetail) {
-                if(choice==0) mutate(Job::BtPower,{"/usr/sbin/surface-bluetooth","--power-on"},"Starting Bluetooth and enabling its radio",25);
+                if(choice==0) mutate(Job::BtPower,{"/usr/sbin/surface-bluetooth","--power-on"},"Starting Bluetooth and enabling its radio",45);
                 else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
                 else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].name; btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
             } else if(validMac(btMac)) {

@@ -1,8 +1,10 @@
 """Bluetooth service fixtures: no host radio, D-Bus, USB or daemon operations."""
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -23,7 +25,14 @@ class BluetoothRecoveryTests(unittest.TestCase):
         self.rfkill.mkdir()
         self.devices = self.base / 'bluetooth'
         self.devices.mkdir()
-        for name, value in (('RFKILL', self.rfkill), ('BLUETOOTH', self.devices)):
+        self.usb = self.base / 'usb'
+        self.usb.mkdir()
+        self.logs = self.base / 'logs'
+        self.logs.mkdir()
+        self.firmware = self.base / 'firmware'
+        self.firmware.mkdir()
+        for name, value in (('RFKILL', self.rfkill), ('BLUETOOTH', self.devices),
+                            ('USB', self.usb), ('LOGS', self.logs), ('FIRMWARE', self.firmware)):
             patcher = patch.object(bluetooth, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -81,7 +90,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
 
     def test_enable_requires_actual_power_readback(self):
         self.radio(0, soft='0')
-        run = Mock(side_effect=[(0, ''), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: no')])
         with patch.object(bluetooth, 'run', run):
             with self.assertRaisesRegex(bluetooth.BluetoothError, 'without a powered adapter'):
@@ -90,11 +99,58 @@ class BluetoothRecoveryTests(unittest.TestCase):
 
     def test_enable_checks_output_and_powered_controller(self):
         self.radio(0)
-        run = Mock(side_effect=[(0, ''), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: yes')])
         with patch.object(bluetooth, 'run', run):
             self.assertEqual(bluetooth.power_on(), 'Changing power on succeeded')
         self.assertEqual((self.rfkill / 'rfkill0/soft').read_text(), '0\n')
+
+    def test_empty_successful_list_waits_for_firmware_registration(self):
+        run = Mock(side_effect=[(0, ''), (0, ''), (0, 'Controller 00:11:22:33:44:55 fixture')])
+        with patch.object(bluetooth, 'run', run), patch.object(bluetooth.time, 'sleep'):
+            self.assertIn('Controller ', bluetooth.wait_adapter())
+        self.assertEqual(run.call_count, 3)
+
+    def test_timeout_distinguishes_no_transport_from_hidden_setup_controller(self):
+        with patch.object(bluetooth, 'run', return_value=(0, '')):
+            with self.assertRaisesRegex(bluetooth.BluetoothError, 'exposed by the kernel'):
+                bluetooth.wait_adapter(seconds=0)
+            (self.devices / 'hci0').mkdir()
+            with self.assertRaisesRegex(bluetooth.BluetoothError, 'adapter initialization'):
+                bluetooth.wait_adapter(seconds=0)
+
+    def test_status_distinguishes_pending_firmware_from_missing_hardware(self):
+        (self.devices / 'hci0').mkdir()
+        with patch.object(bluetooth, 'run', return_value=(0, 'No default controller available')):
+            self.assertIn('adapter initialization', bluetooth.status())
+
+    def test_private_diagnostics_capture_transport_errors_without_addresses(self):
+        adapter = self.usb / '1-4'
+        adapter.mkdir()
+        (adapter / 'idVendor').write_text('0cf3\n')
+        (adapter / 'idProduct').write_text('e302\n')
+        (adapter / 'serial').write_text('MUST-NOT-READ')
+        outputs = [(0, 'Controller 00:11:22:33:44:55 fixture'),
+                   (0, 'Controller 00:11:22:33:44:55 fixture'),
+                   (0, 'Bluetooth: hci0: firmware qca/nvm_usb_00000302.bin failed -2\nUnrelated kernel line')]
+        with patch.object(bluetooth, 'run', side_effect=outputs):
+            bluetooth.save_diagnostics('bluetooth-boot.json', 'fixture')
+        path = self.logs / 'bluetooth-boot.json'
+        text = path.read_text()
+        record = json.loads(text)
+        self.assertNotIn('00:11:22:33:44:55', text)
+        self.assertNotIn('MUST-NOT-READ', text)
+        self.assertEqual(record['usb'][0]['product'], 'e302')
+        self.assertEqual(len(record['kernel_messages']), 1)
+        self.assertIn('failed -2', record['kernel_messages'][0])
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_boot_check_saves_failures_without_power_or_reset(self):
+        with patch.object(bluetooth, 'guard'), patch.object(bluetooth, 'wait_adapter', side_effect=bluetooth.BluetoothError('fixture timeout')):
+            with patch.object(bluetooth, 'save_diagnostics') as save, patch.object(bluetooth, 'power_on') as power:
+                self.assertEqual(bluetooth.main(['--boot-check']), 0)
+        save.assert_called_once_with('bluetooth-boot.json', 'fixture timeout')
+        power.assert_not_called()
 
     def test_kernel_adapter_missing_is_distinct_from_daemon_unavailable(self):
         with patch.object(bluetooth, 'run', return_value=(0, 'No default controller available')):

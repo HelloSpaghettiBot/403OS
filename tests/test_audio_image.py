@@ -20,12 +20,20 @@ class AudioImageInventory(unittest.TestCase):
         build=self.base/'build';kernel=build/'linux-6.12.118';kernel.mkdir(parents=True)
         spec=importlib.util.spec_from_file_location('hardware_check',ROOT/'scripts/check-hardware-config.py')
         hardware=importlib.util.module_from_spec(spec);spec.loader.exec_module(hardware)
-        (kernel/'.config').write_text(''.join('CONFIG_'+name+'=y\n' for group in hardware.REQUIRED.values() for name in group))
+        (kernel/'.config').write_text(''.join('CONFIG_'+name+'=y\n' for group in hardware.REQUIRED.values() for name in group)
+                                     + ''.join('CONFIG_'+name+'=m\n' for name in hardware.MODULES))
         (self.base/'.config').write_text('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG=y\n')
         bluez=build/'bluez5_utils-5.86';bluez.mkdir()
         (bluez/'config.log').write_text('  $ ./configure --enable-hid --enable-hog\n')
         for name in hardware.FIRMWARE:
             path=self.target/'lib/firmware'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture')
+        module_dir=self.target/'lib/modules/fixture'
+        btusb=module_dir/'kernel/drivers/bluetooth/btusb.ko'
+        btusb.parent.mkdir(parents=True);btusb.write_bytes(b'\x7fELFfixture')
+        (module_dir/'modules.dep').write_text('kernel/drivers/bluetooth/btusb.ko:\n')
+        (module_dir/'modules.alias').write_text('alias usb:v*p*d*dcE0dsc01dp01ic*isc*ip*in* btusb\n')
+        load=self.target/'etc/modules-load.d/bluetooth.conf';load.parent.mkdir(parents=True);load.write_text('btusb\n')
+        init=self.target/'etc/init.d/S11modules';init.parent.mkdir(parents=True);init.write_text('# fixture\n');init.chmod(0o755)
         module=self.target/'usr/lib/weston/surface-rotation.so';module.parent.mkdir(parents=True);module.write_bytes(b'fixture')
         self.environment=dict(os.environ,TARGET_DIR=str(self.target),BINARIES_DIR=str(self.images),BUILD_DIR=str(build))
         for name in REQUIRED:

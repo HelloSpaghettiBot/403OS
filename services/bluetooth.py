@@ -6,20 +6,29 @@ blocks, leaves hardware blocks and other radios alone, and never resets a USB
 device or removes an existing bond.
 """
 import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 import time
 
 MARKER = Path('/etc/surface-image-id')
 MOUNTS = Path('/proc/mounts')
 RFKILL = Path('/sys/class/rfkill')
 BLUETOOTH = Path('/sys/class/bluetooth')
+USB = Path('/sys/bus/usb/devices')
+LOGS = Path('/data/logs')
+FIRMWARE = Path('/lib/firmware/qca')
 INIT = '/etc/init.d/S40bluetoothd'
 CLIENT = '/usr/bin/bluetoothctl'
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+CONTROLLER = re.compile(r'^Controller [0-9A-Fa-f:]{17}(?:\s|$)', re.M)
+ADDRESS = re.compile(r'(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b')
 
 
 class BluetoothError(ValueError):
@@ -99,6 +108,95 @@ def ensure_daemon():
     raise BluetoothError('Bluetooth daemon is unavailable; see the boot log for bluetoothd or D-Bus errors')
 
 
+def wait_adapter(seconds=8):
+    """A successful list command can still precede firmware/HCI registration."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            code, output = run([CLIENT, 'list'], 1)
+        except BluetoothError:
+            code, output = 1, ''
+        if code == 0 and CONTROLLER.search(output):
+            return output
+        if time.monotonic() >= deadline:
+            if any(BLUETOOTH.glob('hci[0-9]*')):
+                raise BluetoothError('Bluetooth hardware was found, but adapter initialization did not finish; see Bluetooth diagnostics in /data/logs')
+            raise BluetoothError('No Bluetooth adapter is exposed by the kernel; see Bluetooth diagnostics in /data/logs')
+        time.sleep(0.2)
+
+
+def read_optional(path):
+    try:
+        return path.read_text()[:512].strip()
+    except OSError:
+        return None
+
+
+def diagnostics(reason):
+    """Bounded radio-only evidence; no USB serials, peers, bonds or credentials."""
+    result = dict(schema='surface-bluetooth-diagnostics-v1',
+                  time=datetime.now(timezone.utc).isoformat(), kernel=os.uname().release,
+                  reason=reason, controllers=[], usb=[], firmware={})
+    for path in sorted(BLUETOOTH.glob('hci[0-9]*'))[:16]:
+        result['controllers'].append(dict(name=path.name, device=str((path / 'device').resolve())))
+    for path in sorted(USB.glob('*'))[:256]:
+        driver = (path / 'driver').resolve().name if (path / 'driver').is_symlink() else None
+        vendor = read_optional(path / 'idVendor')
+        if (driver != 'btusb' and vendor != '0cf3' and
+                read_optional(path / 'bDeviceClass') != 'e0' and
+                read_optional(path / 'bInterfaceClass') != 'e0'):
+            continue
+        parent = USB / path.name.split(':')[0]
+        result['usb'].append(dict(port=path.name, vendor=vendor or read_optional(parent / 'idVendor'),
+            product=read_optional(path / 'idProduct') or read_optional(parent / 'idProduct'), driver=driver,
+            authorized=read_optional(path / 'authorized'),
+            power_control=read_optional(path / 'power/control'),
+            runtime_status=read_optional(path / 'power/runtime_status')))
+    for name in ('rampatch_usb_00000302.bin', 'nvm_usb_00000302.bin'):
+        path = FIRMWARE / name
+        try:
+            result['firmware'][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            result['firmware'][name] = 'MISSING'
+    try:
+        result['radio_blocks'] = [dict(name=p.name, soft=s, hard=h) for p, s, h in radio_blocks()]
+    except (OSError, ValueError) as error:
+        result['radio_error'] = str(error)
+    for command in ('list', 'show'):
+        try:
+            code, output = run([CLIENT, command], 2)
+            result[command] = dict(code=code, output=output[-8192:])
+        except (OSError, ValueError) as error:
+            result[command] = dict(error=str(error))
+    try:
+        code, output = run(['/bin/dmesg', '-s', '131072'], 2)
+        lines = [line for line in output.splitlines()
+                 if re.search(r'bluetooth|btusb|btintel|btbcm|\bqca|firmware|\bhci[0-9]', line, re.I)]
+        result['kernel_messages'] = lines[-120:] if code == 0 else ['Kernel log unavailable']
+    except (OSError, ValueError) as error:
+        result['kernel_messages'] = [str(error)]
+    # Adapter addresses can occur in BlueZ output or kernel messages. This log
+    # needs transport/firmware details, not stable personal radio identifiers.
+    return ADDRESS.sub('[address]', json.dumps(result, indent=2)) + '\n'
+
+
+def save_diagnostics(filename, reason):
+    info = LOGS.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise BluetoothError('Bluetooth diagnostics directory is not trusted')
+    content = diagnostics(reason)
+    descriptor, name = tempfile.mkstemp(prefix='.bluetooth-', dir=LOGS)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, LOGS / filename)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def status():
     blocks = radio_blocks()
     if any(hard for _, _, hard in blocks):
@@ -109,16 +207,17 @@ def status():
         code, output = run([CLIENT, 'show'])
     except BluetoothError:
         return 'Bluetooth service is not responding. Choose Scan for controllers to start it'
-    if code == 0 and re.search(r'^Controller [0-9A-Fa-f:]{17}(?:\s|$)', output, re.M):
+    if code == 0 and CONTROLLER.search(output):
         return output
     if not any(BLUETOOTH.glob('hci[0-9]*')):
         return 'No Bluetooth adapter is exposed by the kernel. Cold boot after shutdown; check Bluetooth driver and firmware in the boot log'
-    return output or 'Bluetooth adapter initialization is incomplete. Choose Scan for controllers to retry'
+    return 'Bluetooth hardware was found, but adapter initialization is incomplete. Choose Scan for controllers to retry'
 
 
 def power_on():
     clear_software_blocks()
     ensure_daemon()
+    wait_adapter()
     code, output = run([CLIENT, 'power', 'on'], 5)
     if code or 'Failed' in output or 'succeeded' not in output:
         raise BluetoothError(output or 'Bluetooth radio power-on was not confirmed')
@@ -133,12 +232,29 @@ def main(argv=None):
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--status', action='store_true')
     action.add_argument('--power-on', action='store_true')
+    action.add_argument('--boot-check', action='store_true')
     args = parser.parse_args(argv)
     try:
         guard()
-        print(status() if args.status else power_on(), flush=True)
+        if args.boot_check:
+            try:
+                wait_adapter()
+                reason = 'Adapter registered with BlueZ'
+            except (OSError, ValueError) as error:
+                reason = str(error)
+            save_diagnostics('bluetooth-boot.json', reason)
+        else:
+            print(status() if args.status else power_on(), flush=True)
         return 0
     except (OSError, ValueError) as error:
+        if args.power_on:
+            # Recheck the image guard so a failed host invocation cannot write
+            # diagnostic files or probe host radios.
+            try:
+                guard()
+                save_diagnostics('bluetooth-last-error.json', str(error))
+            except (OSError, ValueError):
+                pass
         print('Bluetooth: ' + str(error), flush=True)
         return 1
 

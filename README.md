@@ -44,6 +44,7 @@ target disk need a separate backup. External game drives remain separate.
 ## Getting started
 
 [Installation and recovery](docs/INSTALL_RECOVERY.md) ·
+[Controllers and Bluetooth](docs/BLUETOOTH.md) ·
 [Remote play](docs/REMOTE_PLAY.md) ·
 [Windows applications](docs/WINDOWS_COMPATIBILITY.md) ·
 [Build from source](docs/BUILD.md)

@@ -18,7 +18,7 @@ REQUIRED = {
                          'I2C_HID_ACPI', 'HID_MULTITOUCH', 'INPUT_EVDEV'),
     'accelerometer': ('INTEL_ISH_HID', 'HID_SENSOR_HUB', 'IIO', 'IIO_BUFFER',
                       'HID_SENSOR_IIO_COMMON', 'HID_SENSOR_IIO_TRIGGER', 'HID_SENSOR_ACCEL_3D'),
-    'bluetooth-gamepad': ('BT', 'BT_BREDR', 'BT_LE', 'BT_HCIBTUSB', 'BT_HIDP',
+    'bluetooth-gamepad': ('BT', 'BT_BREDR', 'BT_LE', 'BT_HIDP', 'FW_LOADER', 'RFKILL',
                           'UHID', 'HID_GENERIC', 'HIDRAW'),
     'console-gamepad': ('NEW_LEDS', 'LEDS_CLASS', 'LEDS_CLASS_MULTICOLOR',
                         'HID_SONY', 'HID_NINTENDO', 'HID_PLAYSTATION'),
@@ -36,6 +36,7 @@ REQUIRED = {
     'tablet-buttons': ('INPUT_MISC', 'KEYBOARD_GPIO', 'INPUT_SOC_BUTTON_ARRAY', 'INTEL_HID_EVENT'),
 }
 FIRMWARE = ('qca/rampatch_usb_00000302.bin', 'qca/nvm_usb_00000302.bin')
+MODULES = {'BT_HCIBTUSB': 'btusb'}
 
 
 def read_config(path):
@@ -55,6 +56,11 @@ def check(config, target=None):
             name = 'CONFIG_' + symbol
             if config.get(name) != 'y':
                 missing.append(dict(group=group, symbol=name, resolved=config.get(name, 'absent'), required='y'))
+    for symbol in MODULES:
+        name = 'CONFIG_' + symbol
+        if config.get(name) != 'm':
+            missing.append(dict(group='bluetooth-firmware-order', symbol=name,
+                                resolved=config.get(name, 'absent'), required='m'))
     if target is not None:
         for name in FIRMWARE:
             path = Path(target) / 'lib/firmware' / name
@@ -65,6 +71,27 @@ def check(config, target=None):
                 valid = False
             if not valid:
                 missing.append(dict(group='bluetooth-firmware', file=name, required='nonempty regular file'))
+        target = Path(target)
+        for name in MODULES.values():
+            modules = list((target / 'lib/modules').glob('*/kernel/drivers/bluetooth/' + name + '.ko'))
+            valid = len(modules) == 1 and modules[0].is_file() and not modules[0].is_symlink()
+            if valid:
+                valid = modules[0].read_bytes()[:4] == b'\x7fELF'
+            if not valid:
+                missing.append(dict(group='bluetooth-module', required='one installed ELF ' + name + '.ko'))
+                continue
+            directory = modules[0].parents[3]
+            dependency = directory / 'modules.dep'
+            aliases = directory / 'modules.alias'
+            if not dependency.is_file() or not re.search(r'^kernel/drivers/bluetooth/' + name + r'\.ko:', dependency.read_text(), re.M):
+                missing.append(dict(group='bluetooth-module', required=name + ' in modules.dep'))
+            if not aliases.is_file() or not re.search(r'^alias usb:.* ' + name + r'$', aliases.read_text(), re.M):
+                missing.append(dict(group='bluetooth-module', required='USB modalias for ' + name))
+            load = target / 'etc/modules-load.d/bluetooth.conf'
+            init = target / 'etc/init.d/S11modules'
+            if (not load.is_file() or name not in load.read_text().splitlines()
+                    or not init.is_file() or not init.stat().st_mode & 0o111):
+                missing.append(dict(group='bluetooth-firmware-order', required='S11modules loads ' + name + ' after root mount'))
     return missing
 
 

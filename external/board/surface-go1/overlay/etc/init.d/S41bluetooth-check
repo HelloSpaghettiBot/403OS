@@ -1,0 +1,8 @@
+#!/bin/sh
+# Save bounded, private startup evidence without delaying HOME or changing bonds.
+case "$1" in
+start)
+    /usr/sbin/surface-bluetooth --boot-check >/dev/null 2>&1 &
+    ;;
+esac
+exit 0

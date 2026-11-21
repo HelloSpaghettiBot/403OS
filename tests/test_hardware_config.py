@@ -19,6 +19,23 @@ class HardwareConfigTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.values = {'CONFIG_' + name: 'y' for names in hardware.REQUIRED.values() for name in names}
+        self.values.update({'CONFIG_' + name: 'm' for name in hardware.MODULES})
+
+    def module_tree(self):
+        directory = self.root / 'lib/modules/fixture'
+        module = directory / 'kernel/drivers/bluetooth/btusb.ko'
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b'\x7fELFfixture')
+        (directory / 'modules.dep').write_text('kernel/drivers/bluetooth/btusb.ko:\n')
+        (directory / 'modules.alias').write_text('alias usb:v*p*d*dcE0dsc01dp01ic*isc*ip*in* btusb\n')
+        config = self.root / 'etc/modules-load.d/bluetooth.conf'
+        config.parent.mkdir(parents=True)
+        config.write_text('btusb\n')
+        init = self.root / 'etc/init.d/S11modules'
+        init.parent.mkdir(parents=True)
+        init.write_text('#!/bin/sh\n')
+        init.chmod(0o755)
+        return directory
 
     def test_resolved_parent_dependency_cannot_be_replaced_by_hid_child(self):
         self.values['CONFIG_I2C_DESIGNWARE_PLATFORM'] = 'n'
@@ -46,6 +63,7 @@ class HardwareConfigTests(unittest.TestCase):
                 self.assertEqual(failures[0]['symbol'], 'CONFIG_' + symbol)
 
     def test_firmware_missing_empty_or_symlink_is_rejected(self):
+        self.module_tree()
         directory = self.root / 'lib/firmware/qca'
         directory.mkdir(parents=True)
         for name in hardware.FIRMWARE:
@@ -57,6 +75,35 @@ class HardwareConfigTests(unittest.TestCase):
         first.unlink()
         first.symlink_to(directory / Path(hardware.FIRMWARE[1]).name)
         self.assertEqual(hardware.check(self.values, self.root)[0]['file'], hardware.FIRMWARE[0])
+
+    def test_builtin_usb_bluetooth_is_rejected_without_early_firmware(self):
+        self.values['CONFIG_BT_HCIBTUSB'] = 'y'
+        self.assertEqual(hardware.check(self.values)[0]['group'], 'bluetooth-firmware-order')
+
+    def test_selected_module_without_installed_object_is_rejected(self):
+        failures = hardware.check(self.values, self.root)
+        self.assertTrue(any(item['group'] == 'bluetooth-module' for item in failures))
+
+    def test_module_requires_dependency_alias_and_rootfs_startup(self):
+        directory = self.module_tree()
+        firmware = self.root / 'lib/firmware'
+        for name in hardware.FIRMWARE:
+            path = firmware / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'fixture')
+        self.assertEqual(hardware.check(self.values, self.root), [])
+        for relative in ('lib/modules/fixture/modules.alias', 'lib/modules/fixture/modules.dep',
+                         'etc/modules-load.d/bluetooth.conf', 'etc/init.d/S11modules'):
+            path = self.root / relative
+            previous = path.read_text()
+            path.write_text('')
+            if path.name == 'S11modules':
+                path.chmod(0o644)
+            with self.subTest(path=relative):
+                self.assertTrue(hardware.check(self.values, self.root))
+            path.write_text(previous)
+            if path.name == 'S11modules':
+                path.chmod(0o755)
 
     def test_cli_pass_never_claims_physical_validation(self):
         config = self.root / 'resolved.config'

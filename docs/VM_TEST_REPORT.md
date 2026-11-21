@@ -4,16 +4,43 @@
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `999818d5a11e549b8b289620367cac69476ba8437c5f318566f3f2b58f3f9647` |
-| Pristine installation payload | `600dfc4a2b1fd6fde6a1adfe54ccd5fb53aa74324ea3f891f00ffa72b644acaf` |
+| Public live USB | `0e0b0a8574b6f0a2750216852011890d4eca713e9f1342c488f9886131122197` |
+| Pristine installation payload | `51a695ef6b740e0e227b423b2c1e82d7e6a2f152a086f8f3e99919fff2f0161e` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
-The current runtime runs used a local test-media variant with supplied library
-data, the same compiled root filesystem and the public base payload above.
-They do not establish a byte-identical boot of the public outer image.
+Current live acceptance used a personal-media variant with the same compiled
+root filesystem and pristine installation payload. The exact public outer
+image was not booted separately. Earlier installation runs retain their
+original image hashes and cover the preceding kernel revision.
 
-## Live boot and GUI installation
+## Current Bluetooth transport update
+
+`20261121-135952-live` booted through OVMF/UEFI with no direct kernel boot,
+using QEMU/KVM, 4 GiB RAM, four virtual CPUs and an 1800×1200 framebuffer.
+Every implemented live check passed; there were no FAIL results.
+
+- The USB Bluetooth module loaded, both Qualcomm firmware files were available,
+  and bluetoothd ran. A bounded boot diagnostic record was created with root
+  ownership and mode 0600. QEMU supplied no physical Bluetooth adapter.
+- Existing-profile login passed with a synthetic root password prepared by
+  the host only in the disposable qcow2 overlay. The input image and its
+  personal password were unchanged. No authentication exception was added
+  to the shipped operating system.
+- Embedded library/cover loading, all eleven emulator probes, NES input/SRAM,
+  real browser launch/return, network, Wine, Moonlight and Tailscale daemon
+  checks passed. Live output rotation preserved compositor/browser processes.
+- The embedded pristine installation image was discovered and fully hashed.
+  GUI shutdown passed. Recorded stereo audio was non-silent, with peak 2987
+  and 41,804 signal frames.
+
+Overall status remains PARTIAL. Surface Bluetooth detection, pairing,
+reconnect and resume are UNTESTED. Generic reboot and interrupted-boot
+recovery are NOT_RUN, enrolled streaming is BLOCKED and first-live-boot
+Tailscale persistence is NOT_VERIFIED. The installer and detached migration
+acceptance below were not repeated for this Bluetooth-only kernel update.
+
+## Previous revision: live boot and GUI installation
 
 `20261121-110730-live` used QEMU 11.1.3, OVMF/KVM, 4 GiB RAM, four virtual CPUs
 and an 1800×1200 framebuffer. It booted through UEFI with no direct kernel
@@ -44,7 +71,7 @@ Overall status is PARTIAL: Surface hardware is UNTESTED, interrupted-boot
 recovery and generic reboot are NOT_RUN, enrolled streaming is BLOCKED and
 first-live-boot Tailscale state persistence is NOT_VERIFIED.
 
-## Detached installed acceptance
+## Previous revision: detached installed acceptance
 
 `20261121-112520-test` booted the newly installed SATA disk through UEFI,
 without installation media or a direct kernel boot, at 1800×1200. It passed

@@ -18,6 +18,8 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
   support; physical pairing and reconnect behavior still require testing.
 - [x] Guarded Bluetooth daemon/software-block recovery with verified power-on
   and specific diagnostics, preserving hardware blocks and pairing policy.
+- [x] Rootfs-time `btusb` module loading with module/dependency/alias/firmware
+  image gates, actual-controller readiness waits and private boot diagnostics.
 - [x] Surface Go I2C HID, LPSS/GPIO and HID-sensor/IIO accelerometer kernel paths,
   checked against the resolved configuration; physical touch/sensors are unverified.
 - [x] Live Weston rotation module, sensor scale/mount-matrix normalization,
@@ -30,7 +32,7 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [x] Self-contained outer/base image pipeline with sparse payload readback checks.
 - [x] Installer migration of local live-USB games, saves, settings and profiles,
   preserving password hashes, ownership and permissions with file readback.
-- [x] Recorded suite: 315 Python tests (288 main plus 27 app fixtures) and
+- [x] Recorded suite: 327 Python tests (300 main plus 27 app fixtures) and
   five native unit test executables.
 
 ## Historical VM and media evidence
@@ -47,8 +49,17 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 ## Current validation
 
+- [x] Updated personal-media UEFI boot and GUI shutdown (`20261121-135952-live`).
+- [x] Bluetooth module/firmware/service startup and root-only diagnostic file.
+- [x] Disposable-overlay login fixture, library/covers, all emulator probes,
+  browser/global return, rotation, network and non-silent audio.
+- [x] Private refresh retains profile/save file contents and original modes.
+- [ ] Physical Surface adapter detection, pairing, gameplay and reconnect.
+
+## Previous revision’s installation acceptance
+
 - [x] Complete live input/framebuffer acceptance on a local test-media variant
-  sharing the current compiled root and public base (`20261121-110730-live`).
+  sharing the preceding compiled root and base (`20261121-110730-live`).
 - [x] Verify root password enrollment, library/cover loading and global HOME return.
 - [x] Verify live rotation/restoration with unchanged browser/compositor PIDs
   and resolution settings in the current VM.

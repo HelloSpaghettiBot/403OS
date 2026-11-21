@@ -6,8 +6,8 @@ profiles, Bluetooth recovery controls and native output rotation.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `999818d5a11e549b8b289620367cac69476ba8437c5f318566f3f2b58f3f9647` |
-| Pristine internal-install image | `600dfc4a2b1fd6fde6a1adfe54ccd5fb53aa74324ea3f891f00ffa72b644acaf` |
+| Public live USB | `0e0b0a8574b6f0a2750216852011890d4eca713e9f1342c488f9886131122197` |
+| Pristine internal-install image | `51a695ef6b740e0e227b423b2c1e82d7e6a2f152a086f8f3e99919fff2f0161e` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
 embedded installation payload and its root-owned read-only metadata.
@@ -39,14 +39,45 @@ embedded installation payload and its root-owned read-only metadata.
   Hardware blocks are retained; no speculative USB reset or pairing-policy
   weakening is applied.
 
-The recorded suite covers **315 Python tests** (288 main and 27 application
+The recorded suite covers **327 Python tests** (300 main and 27 application
 fixtures) and **five native unit test executables**, recorded in
-`artifacts/tests/seamless-final.log`. The profile fixtures
+`artifacts/tests/bluetooth-final.log`. The profile fixtures
 include password hashing, login refusal, identity separation, socket
 permissions and first-boot directory permissions. Compiled kernel and BlueZ
 configuration checks passed.
 
-## Current artifact validation
+## Current Bluetooth correction
+
+The USB Bluetooth transport now loads as `btusb` after the real root filesystem
+and firmware are available, following Pop!_OS’s modular configuration. The
+build checks the installed module, dependency/USB aliases, rootfs startup and
+firmware. Scan waits for an actual BlueZ controller; empty successful lists do
+not establish readiness. Private boot/failure diagnostics retain bounded
+transport, firmware and kernel evidence. See [Bluetooth](BLUETOOTH.md).
+
+The firmware matches Pop!_OS’s corresponding files. This removes an early
+firmware-availability risk; the reported Surface failure still needs hardware
+logs and a physical cold-boot test. No physical Bluetooth success is claimed.
+
+## Current live acceptance
+
+UEFI run `20261121-135952-live` passed the implemented live checks on the
+updated personal-media variant: Bluetooth module/service startup, root-only
+boot diagnostics, password login, library/covers, all eleven emulator probes,
+homebrew input/SRAM, browser/global HOME return, live rotation, network, audio
+and GUI power-off. Its compiled root filesystem and pristine installation
+payload match the public images above; the exact public outer image was not
+booted separately.
+
+The host prepared a synthetic root password only in the disposable qcow2
+write overlay so the test could exercise login. The backing image and the
+personal password record were unchanged. Packaging separately verified file
+contents and preserved profile/save ownership and permissions. Overall VM
+status is PARTIAL because physical hardware, recovery and enrolled streaming
+remain outside the test. Bluetooth adapter detection and pairing on the
+Surface remain unconfirmed.
+
+## Previous revision’s installation acceptance
 
 Live run `20261121-110730-live` passed every implemented check, including
 root enrollment, automatic library/cover loading, browser rotation without
@@ -57,9 +88,9 @@ migration, followed by clean power-off.
 
 Detached UEFI run `20261121-112520-test` booted that installed disk with no
 installation media. Login with the existing password, migrated library/cover
-loading, app/runtime checks, audio and clean power-off passed. The VM used a
-local test-media variant sharing the compiled root filesystem and public
-base payload above; it did not boot the exact public outer-image SHA.
+loading, app/runtime checks, audio and clean power-off passed. Those runs used
+a local test-media variant of the preceding revision; they do not establish
+acceptance of the current public outer-image SHA.
 Overall status remains PARTIAL for hardware, recovery and enrolled streaming.
 See the [VM report](VM_TEST_REPORT.md).
 

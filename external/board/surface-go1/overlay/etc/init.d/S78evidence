@@ -12,6 +12,25 @@ start)
         cat /proc/mounts
         echo 'SURFACE_ROOT_MOUNTS_END'
         if pidof bluetoothd >/dev/null; then echo 'SURFACE_BLUETOOTH_SERVICE_PASS'; else echo 'SURFACE_BLUETOOTH_SERVICE_FAIL'; fi
+        if test -d /sys/module/btusb && test -s /lib/firmware/qca/rampatch_usb_00000302.bin && test -s /lib/firmware/qca/nvm_usb_00000302.bin; then
+            echo 'SURFACE_BLUETOOTH_TRANSPORT_PASS'
+        else
+            echo 'SURFACE_BLUETOOTH_TRANSPORT_FAIL'
+        fi
+        # QEMU has no physical Bluetooth adapter. Check transport load and the
+        # missing-adapter diagnostic independently from hardware functionality.
+        timeout 20 /usr/sbin/surface-bluetooth --boot-check
+        if python3 - <<'PY'
+import json
+from pathlib import Path
+import stat
+path = Path('/data/logs/bluetooth-boot.json')
+record = json.loads(path.read_text())
+assert record['schema'] == 'surface-bluetooth-diagnostics-v1'
+assert stat.S_IMODE(path.stat().st_mode) == 0o600 and path.stat().st_uid == 0
+assert all(len(value) == 64 for value in record['firmware'].values())
+PY
+        then echo 'SURFACE_BLUETOOTH_DIAGNOSTICS_PASS'; else echo 'SURFACE_BLUETOOTH_DIAGNOSTICS_FAIL'; fi
         SDL_VIDEO_DRIVER=dummy /usr/bin/surface-shell --self-test
         if test -x /usr/bin/surface-emulator; then /usr/sbin/surface-emulator-check; fi
         if curl -fsS --max-time 20 -o /dev/null https://buildroot.org/; then echo 'SURFACE_HTTPS_PASS'; else echo 'SURFACE_HTTPS_FAIL'; fi
