@@ -313,12 +313,14 @@ std::string installProgress(const std::string& text) {
     for(auto line=output.rbegin();line!=output.rend();++line) {
         const auto phase=jsonString(*line,"phase"); if(phase.empty()) continue;
         const auto percent=std::min<std::uint64_t>(100,jsonNumber(*line,"percent"));
-        if(phase=="verify-source") return "Step 1 of 4: Checking installer image - "+std::to_string(percent)+"%";
-        if(phase=="copy-image") return "Step 2 of 4: Installing 403 OS - "+std::to_string(percent)+"%";
-        if(phase=="verify-target") return "Step 3 of 4: Verifying the installed copy - "+std::to_string(percent)+"%";
-        return "Step 4 of 4: Expanding and verifying game storage";
+        if(phase=="verify-source") return "Step 1 of 6: Checking installer image - "+std::to_string(percent)+"%";
+        if(phase=="copy-image") return "Step 2 of 6: Installing 403 OS - "+std::to_string(percent)+"%";
+        if(phase=="verify-target") return "Step 3 of 6: Verifying the installed copy - "+std::to_string(percent)+"%";
+        if(phase=="preserve-user-data") return "Step 5 of 6: Copying your games, saves and profiles - "+std::to_string(percent)+"%";
+        if(phase=="verify-user-data") return "Step 6 of 6: Verifying your games and profiles - "+std::to_string(percent)+"%";
+        return "Step 4 of 6: Preparing game storage";
     }
-    return "Step 1 of 4: Checking installer image";
+    return "Step 1 of 6: Checking installer image";
 }
 // One bounded process group at a time. Stdout/stderr remain in memory; command
 // arguments and Wi-Fi credentials are never printed or written into UI logs.
@@ -624,7 +626,7 @@ struct ControlCenter::Impl {
             break;
         case PanelKind::Library:
             view.title="Game library";
-            view.rows={"Search games","Source folder: "+librarySource,"Scan source folder (local artwork only)","Scan and download matching cover artwork","Refresh external drives (read only)"};
+            view.rows={"Search games by name","Find games on this device and connected drives","Download missing cover art"};
             break;
         case PanelKind::DW3:
             view.title="Digimon World 3 Online";
@@ -665,7 +667,7 @@ struct ControlCenter::Impl {
         } else if(kind==PanelKind::Network) {
             if(interface.empty()) view.status="No Wi-Fi radio is visible to the kernel; wired networking may still be available";
             else start(Job::WpaStatus,wpa({"status"}),"Reading Wi-Fi association");
-        } else if(kind==PanelKind::Bluetooth) start(Job::BtShow,{"bluetoothctl","show"},"Detecting Bluetooth adapter");
+        } else if(kind==PanelKind::Bluetooth) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
@@ -677,7 +679,7 @@ struct ControlCenter::Impl {
         } else if(kind==PanelKind::DW3) {
             dw3Confirm=protonConfirm=false; rows(); start(Job::DW3Status,{"dw3-setup","--status"},"Checking locally imported DW3 files; Wine/Proton compatibility is unverified");
         } else if(kind==PanelKind::Windows) start(Job::WindowsList,{"surface-windows-runner","--list-exes"},"Reading explicitly registered Windows applications; no executable scan or launch occurs");
-        else view.status="Game sources are read only. Cover downloads occur only after choosing the download action";
+        else view.status="Games are discovered automatically. Search by title, or choose Find games to refresh now";
     }
     void browser(const std::string& url) {
         if(!allowed(false)) return;
@@ -806,8 +808,8 @@ struct ControlCenter::Impl {
             break;
         case PanelKind::Bluetooth:
             if(!btDetail) {
-                if(choice==0) { if(!adapter) view.status="No Bluetooth adapter detected"; else mutate(Job::BtPower,{"bluetoothctl","power","on"},"Enabling Bluetooth radio"); }
-                else if(choice==1) start(Job::BtShow,{"bluetoothctl","show"},"Detecting Bluetooth adapter");
+                if(choice==0) mutate(Job::BtPower,{"/usr/sbin/surface-bluetooth","--power-on"},"Starting Bluetooth and enabling its radio",25);
+                else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
                 else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].name; btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
             } else if(validMac(btMac)) {
                 if(choice==0) mutate(Job::BtPair,{"bluetoothctl","--agent","NoInputNoOutput","--timeout","35","pair",btMac},"Pairing controller; keep it in pairing mode",40);
@@ -913,13 +915,13 @@ struct ControlCenter::Impl {
             }
             break;
         case PanelKind::Library:
-            if(choice==0) beginEdit(Edit::LibrarySearch,"Search installed catalog titles (an empty query clears the filter)");
-            else if(choice==1) beginEdit(Edit::LibrarySource,"Enter the absolute path to your mounted game folder",false,librarySource);
-            else if(choice==2 || choice==3) {
-                std::vector<std::string> arguments{"surface-library-scan","--root",librarySource,"--output","/data/library","--cache","/data/artwork"};
-                if(choice==3) arguments.emplace_back("--fetch-covers");
-                mutate(Job::LibraryScan,std::move(arguments),choice==3?"Scanning game references and downloading exact matching cover artwork":"Scanning game references and local artwork; source games remain read only",600);
-            } else if(choice==4) mutate(Job::LibraryVolumes,{"surface-library-volumes","--mount-readonly"},"Discovering external game volumes and verifying read-only mounts",40);
+            if(choice==0) beginEdit(Edit::LibrarySearch,"Type a game name");
+            else if(choice==1) {
+                if(allowed(false)) start(Job::LibraryScan,{"/usr/sbin/surface-library-discovery","--once"},"Finding games on this device and connected drives",180);
+            }
+            else if(choice==2) {
+                mutate(Job::LibraryScan,{"/usr/sbin/surface-library-discovery","--once","--fetch-covers"},"Downloading missing game cover art",600);
+            }
             break;
         case PanelKind::DW3:
             if(protonConfirm) {
@@ -1126,10 +1128,11 @@ struct ControlCenter::Impl {
         case Job::BtShow:
             adapter=output.find("Controller ")!=std::string::npos && output.find("No default controller")==std::string::npos; rows();
             if(adapter) start(Job::BtDevices,{"bluetoothctl","devices"},"Reading known controllers");
-            else view.status="No Bluetooth adapter detected; check the hardware/driver or USB adapter";
+            else view.status=output.empty()?"Bluetooth diagnostics returned no adapter state":brief(output);
             break;
         case Job::BtPower:
             if(failed) { view.status=diagnostic; break; }
+            adapter=true; rows();
             mutate(Job::BtScan,{"bluetoothctl","--timeout","8","scan","on"},"Scanning: put the controller into pairing mode",12); break;
         case Job::BtScan: start(Job::BtDevices,{"bluetoothctl","devices"},"Reading discovered controllers"); break;
         case Job::BtDevices:
@@ -1224,9 +1227,9 @@ struct ControlCenter::Impl {
             view.status="Back up anything you need before continuing. Install 403 OS erases the entire selected disk. Cancel leaves it unchanged. No keyboard is needed"; break;
         case Job::InstallExecute: {
             const auto list=lines(output);
-            if(list.empty() || jsonString(list.back(),"event")!="complete" || !jsonBool(list.back(),"data_expansion_verified") || jsonNumber(list.back(),"data_actual_bytes")!=plannedDataBytes) { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="Installation did not report verified copy and DATA expansion. Do not boot the target"; installStage=InstallStage::Disks; rows(); break; }
+            if(list.empty() || jsonString(list.back(),"event")!="complete" || !jsonBool(list.back(),"data_expansion_verified") || !jsonBool(list.back(),"user_data_verified") || jsonNumber(list.back(),"data_actual_bytes")!=plannedDataBytes) { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="Installation did not finish verifying the system, games and profiles. Keep the USB connected and retry"; installStage=InstallStage::Disks; rows(); break; }
             std::printf("SURFACE_INSTALL_UI_COMPLETE bytes=%llu\n",static_cast<unsigned long long>(plannedDataBytes)); std::fflush(stdout);
-            installStage=InstallStage::Done; installPowerConfirm=false; view.selected=1; rows(); view.status="Image copy, readback, GPT and DATA expansion verified. Power off, remove USB boot media after shutdown, then power on to boot internal storage"; break;
+            installStage=InstallStage::Done; installPowerConfirm=false; view.selected=1; rows(); view.status="403 OS, your games, saves and profiles are installed and verified. Your password stays the same. Power off, remove the USB, then power on"; break;
         }
         case Job::InstallPoweroff: view.status="Power off requested. After shutdown, remove USB boot media, then power on"; break;
         case Job::Reboot: view.status="Restart requested"; break;
@@ -1260,7 +1263,10 @@ struct ControlCenter::Impl {
         case Job::PokeImport:
             start(Job::PokeRomStatus,{"pokemmo-setup","--rom-status"},"Import copy verified; checking installed ROM headers"); break;
         case Job::LibraryScan: {
-            view.status="Catalog: "+std::to_string(jsonNumber(output,"games"))+" games, "+std::to_string(jsonNumber(output,"covers"))+" covers, "+std::to_string(jsonNumber(output,"warnings"))+" warnings. HOME will reload the saved catalog";
+            const auto discovery=jsonString(output,"event")=="library-discovery";
+            if(discovery && !jsonString(output,"error").empty()) { view.status=jsonString(output,"error");break; }
+            view.status=discovery?jsonString(output,"message"):"Found "+std::to_string(jsonNumber(output,"games"))+" games and "+std::to_string(jsonNumber(output,"covers"))+" covers";
+            if(ok) { search="";opened=false; }
             if(jsonNumber(output,"warnings")) {
                 const auto report=readTail("/data/library/catalog.json"); const auto position=report.rfind("\"errors\"");
                 if(position!=std::string::npos) {

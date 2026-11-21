@@ -136,6 +136,21 @@ class USBFlashTests(unittest.TestCase):
             with self.assertRaisesRegex(flash.FlashError,'readback SHA'):
                 flash.copy_and_verify(4,5,1024,32*1024,'a'*64)
 
+    def test_explicit_readback_skip_flushes_write_without_reading_target(self):
+        events=[]
+        with mock.patch.object(os,'pread',return_value=b'x'*1024) as read, \
+             mock.patch.object(flash,'pwrite_all') as write, mock.patch.object(os,'fsync') as flush, \
+             mock.patch.object(flash,'sha256') as digest, mock.patch.object(flash.gpt,'read_gpt') as gpt:
+            actual=flash.copy_and_verify(4,5,1024,32*1024,'a'*64,
+                lambda phase,offset:events.append((phase,offset)),readback=False)
+        self.assertEqual(actual,'a'*64)
+        read.assert_called_once_with(4,1024,0)
+        self.assertEqual(write.call_count,2)
+        flush.assert_called_once_with(5)
+        digest.assert_not_called();gpt.assert_not_called()
+        self.assertIn(('readback_skipped',1024),events)
+        self.assertNotIn(('readback_complete',1024),events)
+
     def test_preview_never_instantiates_writable_backend(self):
         plan_path = self.directory/'plan.json'
         plan_path.write_text(json.dumps(self.plan))

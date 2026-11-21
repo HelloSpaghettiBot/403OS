@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 from types import SimpleNamespace
@@ -203,6 +204,22 @@ class LibraryVolumeTests(unittest.TestCase):
         with self.assertRaises(OSError):
             volumes.secure_directory(self.library/"1234-ABCD")
         self.assertFalse((outside/"1234-ABCD").exists())
+
+    def test_private_umask_does_not_block_new_game_mountpoint_traversal(self):
+        before = stat.S_IMODE(self.root.stat().st_mode)
+        mask = os.umask(0o077)
+        try:
+            descriptor = volumes.secure_directory(self.library/"1234-ABCD")
+            os.close(descriptor)
+        finally:
+            os.umask(mask)
+        for path in (self.root/"media", self.library, self.library/"1234-ABCD"):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(self.root.stat().st_mode), before)
+        self.library.chmod(0o700)
+        descriptor = volumes.secure_directory(self.library/"1234-ABCD")
+        os.close(descriptor)
+        self.assertEqual(stat.S_IMODE(self.library.stat().st_mode), 0o700)
 
     def test_regular_device_nodes_are_rejected_by_production_open(self):
         found, _ = self.inventory()

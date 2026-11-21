@@ -18,8 +18,9 @@ The USB has EFI, root and 4 GiB DATA partitions. DATA contains the sparse base
 as `SurfaceGoGamingOS/surface-go.img` with its `.sha256` sidecar, owned by root
 with read-only file permissions. The installation panel discovers it
 automatically. No second source USB or manual file staging is required.
-Internal installation copies the pristine base, so installed DATA does not
-contain another installer image.
+Internal installation copies the pristine base, expands DATA, then copies and
+verifies supported live-USB games and user data. Installed DATA does not contain
+another installer image.
 
 Retain a dated image/checksum pair, source revision and matching test results.
 Rebuilding replaces output filenames. A checksum detects changed bytes; it
@@ -102,29 +103,55 @@ USB and Bluetooth controller support includes the enabled Linux HID/gamepad
 drivers and SDL's bundled mappings. Pair Bluetooth devices in **Controllers**;
 use the mapping wizard for controllers whose layout is not recognized. Actual
 compatibility depends on the device, firmware and connection mode; individual
-physical models need testing.
+physical models need testing. Bluetooth pairing on Surface hardware remains
+under validation. Scan can start the Bluetooth service and
+clear a Bluetooth software radio block; hardware blocks and driver errors are
+reported separately. Driver coverage is not a promise of universal support.
+
+## Find and search games
+
+Store local games in `/data/roms` or connect a supported USB/removable-SD game
+drive. HOME discovers games automatically and refreshes its library. External
+game volumes are mounted read only; scanning does not move or change ROMs.
+
+In **Games**, open **Search games** and enter part of a title. Confirm to see
+matches. Back closes the title field and shows **Find games** to refresh
+immediately. Missing cover downloads require the separate cover-art action;
+ordinary discovery uses local or cached artwork.
+
+Games stored on the live USB's DATA can be carried into an internal
+installation. Games on another drive remain on that drive. Unsupported or
+external catalog references are reported during installation preflight rather
+than silently omitted.
 
 ## Install to internal storage
 
 Installation replaces **every partition and file on the selected disk**,
 including Windows, recovery partitions and existing DATA. There is no dual-boot
-or preserve-DATA mode. Back up first and use only an image whose matching
-live/install tests have completed. The current revised image is still under
-validation.
+or mode that preserves DATA already on the target. Supported data from the
+running live USB is copied into the new installation after cloning. Back up
+first and use only an image whose matching live/install tests have completed.
+VM installation and data migration have passed. Physical Surface installation
+remains under validation.
 
 1. In the live HOME, choose **Install 403 OS**, or open Settings → **Install to internal storage**.
    Review the intended internal whole disk's model, stable ID and capacity.
    The installer requires at least 60,000,000,000 bytes and 512-byte sectors.
    USB/removable, boot/root, mounted and active-swap targets are excluded.
 2. Review the discovered embedded source filename/SHA-256, selected target,
-   destructive warning and proposed DATA capacity. The source must be on
-   storage separate from the target.
+   destructive warning and proposed DATA capacity.
+   The source must be on storage separate from the target. Close running apps
+   so saves and user data remain unchanged during copying.
 3. Review the disk and erase warning, then choose **Install 403 OS — erase everything on this disk**.
    Cancel is selected by default. No keyboard or serial-number typing is required;
    the backend still verifies the reviewed hardware identity and source checksum.
 4. Keep power connected through source verification, copying, complete
-   readback, GPT verification and DATA expansion. Wait for the final verified
-   completion result; progress alone is not completion.
+   readback, GPT verification, DATA expansion and user-data migration. Local
+   games, BIOS files, saves, settings and profiles are copied with their
+   ownership and permissions, then checked by file readback. Existing profile
+   password hashes are retained, so the same passwords unlock the installed
+   system. Wait for the final verified completion result; progress alone is
+   not completion.
 5. Choose **Power off**. After shutdown, remove the USB and start the device
    from internal storage. There is no automatic reboot.
 
@@ -195,7 +222,8 @@ growth. Preserve diagnostics and recover needed files before another write;
 there is no automatic rollback of old contents.
 
 A reinstall repeats the same whole-disk review and new exact destructive
-confirmation. It replaces DATA too. Do not resume a partial clone with raw
+confirmation. It replaces the target's DATA too; only supported data from the
+current live USB is migrated. Do not resume a partial clone with raw
 disk commands or apply a USB helper to an internal disk. If the installer
 refuses the layout, retain its diagnostics for recovery review.
 

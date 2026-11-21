@@ -21,6 +21,11 @@ obsolete physical-end GPT, and verifies complete readback/GPT checksums.
 Host storage-location and permission guards must also be satisfied; the tool
 is intended for the configured development environment, not a portable GUI.
 
+Readback is enabled by default. The explicit `--skip-readback` option flushes
+the write but omits target readback and records `WRITTEN_UNVERIFIED`, with
+`full_image_readback=SKIPPED_BY_EXPLICIT_REQUEST`. This result is not a verified
+flash; source checks, target identity and exclusive-access guards still apply.
+
 DATA remains 4 GiB and excess capacity is unused. This is not secure erasure.
 Metadata backups cannot restore overwritten files. An interrupted write may
 require a fresh complete verified flash.

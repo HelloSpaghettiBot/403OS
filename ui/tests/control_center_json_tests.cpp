@@ -68,9 +68,11 @@ int main() {
     assert(!InstallReview::fromPlan(validPlan,source,unidentified));
     auto invalidHash=source; invalidHash.hash=std::string(64,'z');
     assert(!InstallReview::fromPlan(validPlan,invalidHash,target));
-    assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":42}\n{\"phase\":").find("Step 2 of 4: Installing 403 OS - 42%")!=std::string::npos);
-    assert(surface::control_detail::installProgress("{\"phase\":\"verify-target\",\"percent\":75}").find("Step 3 of 4")!=std::string::npos);
-    assert(surface::control_detail::installProgress("{\"phase\":\"resize-unmounted-data-filesystem\"}").find("Step 4 of 4")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":42}\n{\"phase\":").find("Step 2 of 6: Installing 403 OS - 42%")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"preserve-user-data\",\"percent\":37}").find("Copying your games, saves and profiles - 37%")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"verify-user-data\",\"percent\":100}").find("Verifying your games and profiles - 100%")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"verify-target\",\"percent\":75}").find("Step 3 of 6")!=std::string::npos);
+    assert(surface::control_detail::installProgress("{\"phase\":\"resize-unmounted-data-filesystem\"}").find("Step 4 of 6")!=std::string::npos);
     assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":999}").find("100%")!=std::string::npos);
     std::cout<<"Command JSON parsing, reviewed installer buttons, literal confirmation, changed-device refusal, and progress tests pass\n";
 }

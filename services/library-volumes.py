@@ -282,6 +282,14 @@ def secure_directory(path):
             except FileNotFoundError:
                 os.mkdir(component, mode=0o755, dir_fd=fd)
                 next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                # The discovery daemon intentionally starts with umask 077.
+                # New mountpoint parents still need traversal by game UIDs;
+                # never adopt or chmod a pre-existing directory tree.
+                try:
+                    os.fchmod(next_fd, 0o755)
+                except Exception:
+                    os.close(next_fd)
+                    raise
             os.close(fd)
             fd = next_fd
         return fd

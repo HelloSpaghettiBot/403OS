@@ -1,0 +1,16 @@
+#!/bin/sh
+case "$1" in
+start)
+    test -f /etc/surface-image-id || exit 1
+    grep -q ' /data ext4 ' /proc/mounts || exit 1
+    umask 077
+    start-stop-daemon -S -b -m -p /run/surface-library-discovery.pid \
+        -x /usr/sbin/surface-library-discovery -- --daemon \
+        >> /data/logs/library-discovery.log 2>&1
+    ;;
+stop)
+    start-stop-daemon -K -p /run/surface-library-discovery.pid
+    rm -f /run/surface-library-discovery.pid
+    ;;
+esac
+exit 0

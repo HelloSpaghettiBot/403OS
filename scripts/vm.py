@@ -220,6 +220,9 @@ class VM:
             data = self.log.read_text(errors="replace") if self.log.exists() else ""
             if token in data[after:]:
                 return data
+            if token.startswith('SURFACE_INSTALL_UI_') and 'SURFACE_INSTALL_UI_FAILURE' in data[after:]:
+                self.screenshot('installer-failed.png')
+                raise RuntimeError(f'Installer reported failure; see {self.directory}/installer-failed.png')
             if self.process.poll() is not None:
                 raise RuntimeError(f"QEMU exited ({self.process.returncode}) before {token}; see {self.directory}")
             time.sleep(0.2)
@@ -449,7 +452,9 @@ def exercise_display(vm, width, height):
         result=struct.unpack('>II',vm.screenshot(name).read_bytes()[16:24])
         return f'{result[0]}x{result[1]}'
     def open_settings():
-        start=offset();vm.click_ui(60+6*187+85,904);time.sleep(2)
+        start=offset();vm.key('down')
+        for _ in range(6):vm.key('right')
+        vm.key('ret');time.sleep(2)
         vm.key('up')
         if 'SURFACE_PROFILE_PROTOCOL 1' in vm.log.read_text(errors='replace'):vm.key('up')
         vm.key('ret')
@@ -536,6 +541,7 @@ def parse_arguments(argv=None):
     parser.add_argument("--test-display", action="store_true",help="Exercise installed display mode UI, confirmation and timeout rollback")
     parser.add_argument('--test-profiles',action='store_true',help='Require actual profile enrollment/login and reject an incorrect login password')
     parser.add_argument('--create-test-profile',action='store_true',help='Create the synthetic secondary profile on an existing root-only disposable disk')
+    parser.add_argument('--expect-existing-profile',action='store_true',help='Require installed login with the existing fixture password instead of enrolling again')
     parser.add_argument('--test-rotation',action='store_true',help='Require actual live Weston rotation with preserved browser/compositor processes')
     parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
@@ -562,6 +568,8 @@ def parse_arguments(argv=None):
         parser.error('--test-profiles requires a live or installed graphical boot')
     if args.create_test_profile and not args.test_profiles:
         parser.error('--create-test-profile requires --test-profiles')
+    if args.expect_existing_profile and (args.mode!='test' or args.disk is None):
+        parser.error('--expect-existing-profile requires an explicit installed --disk')
     if args.test_rotation and args.mode=='install':
         parser.error('--test-rotation requires a live or installed graphical boot')
     if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
@@ -621,6 +629,10 @@ def main():
             vm.wait_for("SURFACE_APP_CHECK_END",1800 if args.test_proton else 120)
             vm.wait_for("SURFACE_READY graphics=wayland")
             authenticate_profile(vm,summary,required=args.test_profiles)
+            if args.expect_existing_profile:
+                if summary.get('profile_authentication',{}).get('action')!='login-root':
+                    raise RuntimeError('Installed system asked to enroll again instead of retaining its existing password')
+                summary['checks']['installed_existing_password_preserved']='PASS'
             summary['display_configuration']=serial_json(vm,'SURFACE_DISPLAY_STARTUP ',timeout=15)
             vm.wait_for("SURFACE_EFI_PASS")
             summary["checks"]["uefi_graphical_boot"] = "PASS"
@@ -717,6 +729,11 @@ def main():
                 summary['checks']['display_apply_confirm_timeout_rollback']='PASS'
             if args.test_profiles:exercise_profiles(vm,summary,create=args.create_test_profile)
             if args.test_install_ui:
+                # Publishable screenshot uses the original system artwork,
+                # without displaying private games or commercial cover art.
+                if args.expect_library_games and not args.test_profiles:
+                    vm.key('down');vm.key('right');vm.key('ret');time.sleep(1)
+                    vm.screenshot('systems.png')
                 summary['ui_installed_disk']=exercise_install_ui(vm)
                 summary['checks']['click_installer_copy_readback_data_growth']='PASS'
                 summary['checks']['ui_clean_poweroff']='PASS'
@@ -733,7 +750,14 @@ def main():
                 print(f"HOME ready for interaction: {directory}", flush=True)
                 vm.process.wait()
             else:
-                vm.click_ui(60+7*187+85,904)
+                if args.test_profiles or args.test_display:
+                    vm.click_ui(60+7*187+85,904)
+                else:
+                    # The ordinary run reset the dock to zero after browser
+                    # return. Use its real keyboard/controller navigation.
+                    vm.key('down')
+                    for _ in range(7):vm.key('right')
+                    vm.key('ret')
                 vm.key("ret")
                 vm.process.wait(timeout=45)
                 if vm.process.returncode != 0:

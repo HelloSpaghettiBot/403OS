@@ -80,25 +80,9 @@ download. [PokeMMO's official launcher](https://github.com/PokeMMO/PokeMMO-Launc
 provides its own update/signature functionality. The client remains subject
 to its own license and first-login terms.
 
-## Exact DW3 product
+## Other online games
 
-The user-provided `/run/media/Luls/Games/DW3 Online` package identifies itself
-as **Digimon World 3 Online**, from [digitalna.com.br](https://digitalna.com.br/).
-Its launcher metadata names Java 17.0.17, LibGDX 1.12.1/LWJGL 3.3.3 and
-`dw.client.ClientMain`. The supplied runtime, native libraries and
-`dwcofre.dll` are Windows binaries. Those packaging facts do not establish
-a supported Linux Java launch path.
-
-The [official download page](https://digitalna.com.br/baixar) currently
-provides Windows 64-bit ZIP and Android 8+ APK, with no Linux client.
-The dedicated HOME tile uses an imported, unchanged Windows client through
-the separate [Wine/DW3 import helpers](../dw3/README.md). The native Wine 11.0
-package recipe and guarded import/launch wrappers are implemented; target
-compilation and client compatibility still require testing. The game must
-not be labeled Digimon Masters or presented as preinstalled/playable.
-
-The [DW3 terms](https://digitalna.com.br/termos) describe a private client
-and restrict modification and reverse engineering. No redistribution
-permission was established. Inspection was limited to packaging metadata,
-the public legal notice and standard manifest; no protected game data,
-credentials, keys or account files were extracted or analyzed.
+Digimon World 3 Online uses a separate Windows-client import and Wine/UMU
+launch workflow. See [DW3 setup](../dw3/README.md) and
+[Windows compatibility](../../docs/WINDOWS_COMPATIBILITY.md).
+Clients and account data are supplied by the user and are not bundled.

@@ -1,13 +1,13 @@
 # Status — November 21, 2026
 
-403 OS remains a development preview. The current image compiles with the
-GUI installer, password-protected profiles, expanded controller drivers and
-native output rotation.
+403 OS remains a development preview. The current image includes automatic
+game discovery, title search, live-USB data migration, password-protected
+profiles, Bluetooth recovery controls and native output rotation.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `8fbfb8494ae5b66896f76690fd239fcbdc1cb6abe434b1e137a45ccb2b5d91f2` |
-| Pristine internal-install image | `664d6c92e2132c2457696ad626c46c08167c2a4b7366ad1626a69ba95eccb7c1` |
+| Public live USB | `999818d5a11e549b8b289620367cac69476ba8437c5f318566f3f2b58f3f9647` |
+| Pristine internal-install image | `600dfc4a2b1fd6fde6a1adfe54ccd5fb53aa74324ea3f891f00ffa72b644acaf` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
 embedded installation payload and its root-owned read-only metadata.
@@ -28,39 +28,54 @@ embedded installation payload and its root-owned read-only metadata.
   resolution trials. The automatic rotation toggle is persistent.
 - The GUI installer discovers the pristine embedded image, reviews the selected
   disk with Cancel selected by default, then verifies source, copy, complete
-  readback, GPT and fresh DATA expansion before offering power-off.
+  readback, GPT and fresh DATA expansion. It copies supported local live-USB
+  games, saves, settings and profiles with ownership/permissions and file
+  readback checks, retaining existing password hashes before offering power-off.
+- A guarded service discovers local games and read-only external game volumes;
+  HOME reloads the catalog and title search accepts keyboard or on-screen input.
+  Ordinary discovery preserves cached covers and makes no network requests.
+- Bluetooth Scan can clear Bluetooth-only software blocks and start an
+  unavailable daemon, with power-state readback and specific diagnostics.
+  Hardware blocks are retained; no speculative USB reset or pairing-policy
+  weakening is applied.
 
-The recorded suite covers **280 Python tests** (253 main and 27 application
-fixtures) and **seven native test executables**. The 19 profile fixtures
+The recorded suite covers **315 Python tests** (288 main and 27 application
+fixtures) and **five native unit test executables**, recorded in
+`artifacts/tests/seamless-final.log`. The profile fixtures
 include password hashing, login refusal, identity separation, socket
 permissions and first-boot directory permissions. Compiled kernel and BlueZ
 configuration checks passed.
 
 ## Current artifact validation
 
-Live run `20261121-084511-live` passed every implemented check, including
-root enrollment, a secondary user's browser with all real/effective/saved
-UIDs and GIDs at 2000, global return and switching back to root. Actual browser
-geometry rotated from 1800×1200 to 1200×1800 and back with unchanged browser
-and compositor processes and unchanged resolution settings.
+Live run `20261121-110730-live` passed every implemented check, including
+root enrollment, automatic library/cover loading, browser rotation without
+restarting its processes, all eleven emulator probes, audio and global HOME
+return. GUI installation into a disposable 64 GiB SATA disk passed complete
+copy/readback, GPT checks, DATA expansion and verified local game/profile
+migration, followed by clean power-off.
 
-The same run completed GUI installation into a disposable 64 GiB SATA disk,
-including full copy/readback, GPT checks, DATA growth and clean power-off.
-Detached installed-boot and display tests are in progress. Overall status is
-PARTIAL for untested hardware, recovery and enrolled streaming. See the
-[VM report](VM_TEST_REPORT.md).
+Detached UEFI run `20261121-112520-test` booted that installed disk with no
+installation media. Login with the existing password, migrated library/cover
+loading, app/runtime checks, audio and clean power-off passed. The VM used a
+local test-media variant sharing the compiled root filesystem and public
+base payload above; it did not boot the exact public outer-image SHA.
+Overall status remains PARTIAL for hardware, recovery and enrolled streaming.
+See the [VM report](VM_TEST_REPORT.md).
 
-Historical November 20 VM runs passed GUI installation into a disposable
-64 GiB SATA disk, detached UEFI boot, display Apply/Keep, 45-second rollback
-and cold-boot resolution/DATA/Tailscale persistence. Those results do not
-establish the additions in this image.
+Earlier runs separately established secondary-profile UID/GID dropping and
+browser return (`20261121-084511-live`), plus installed display Apply/Keep,
+45-second rollback and cold-boot persistence on November 20. Those checks were
+not repeated as part of the new migration acceptance.
 
 ## Physical and release limits
 
-The reported Surface touch failure needs a physical retest with the new
-kernel. Accelerometer axes, four orientations, touch coordinates, controllers,
-radios, audio, battery and suspend remain physically unverified. VM controller
-injection does not establish compatibility with every real controller.
+Earlier physical boot logs showed Intel HD 615 graphics initialization and
+ELAN touch-device registration. This is detection evidence only. The reported
+touch and Bluetooth failures still need physical retesting. Accelerometer
+axes, four orientations, touch coordinates, pairing/reconnect, radios, audio,
+battery and suspend remain physically unverified. VM input injection does not
+establish compatibility with every real controller.
 
 Proton setup, online-game login/gameplay and enrolled streaming remain
 separate acceptance work. No production-readiness or physical-device

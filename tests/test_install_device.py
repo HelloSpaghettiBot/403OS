@@ -64,6 +64,13 @@ class InstallerSafetyTests(unittest.TestCase):
         self.digest = fixture_image(self.image)
         helper_patch = patch.object(installer, 'growth_helper', return_value=vars(grow))
         helper_patch.start();self.addCleanup(helper_patch.stop)
+        self.seed_plan=dict(entries=[],bytes=64,files=2,rom_files=1,root_auth_preserved=True,manifest_sha256='a'*64)
+        self.seed_helper=dict(library_lock=contextlib.nullcontext,mounted_data=lambda:None,
+                             source_plan=lambda capacity:dict(self.seed_plan),
+                             apply_seed=lambda target,identity,uuid,size,plan:dict(event='seed-complete',target=target,target_id=identity,verified=True,
+                                 **{key:plan[key] for key in ('bytes','files','rom_files','root_auth_preserved')}))
+        seed_patch=patch.object(installer,'seeding_helper',return_value=self.seed_helper)
+        seed_patch.start();self.addCleanup(seed_patch.stop)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -332,7 +339,19 @@ class InstallerSafetyTests(unittest.TestCase):
             events.append('final-metadata-verification')
             if scenario == 'final-mismatch': raise installer.Refused('Fixture final filesystem size mismatch')
             return dict(uuid=plan['data_filesystem_uuid'], bytes=plan['data_proposed_bytes'])
+        def seed_plan(capacity):
+            events.append('migration-preflight')
+            if scenario=='migration-space':raise ValueError('fixture live data does not fit')
+            return dict(self.seed_plan)
+        def seed_data(device,identity,uuid,size,reviewed):
+            events.append('migration-copy-and-verify')
+            self.assertEqual(size,plan['data_proposed_bytes'])
+            if scenario=='migration-failed':raise ValueError('fixture migration readback failed')
+            return dict(event='seed-complete',target=device,target_id=identity,verified=scenario!='migration-unverified',
+                        **{key:reviewed[key] for key in ('files','bytes','rom_files','root_auth_preserved')})
+        helper=dict(self.seed_helper,source_plan=seed_plan,apply_seed=seed_data)
         with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(installer,'seeding_helper',return_value=helper))
             stack.enter_context(patch.object(installer, 'require_guest'))
             stack.enter_context(patch.object(installer, 'boot_partition_devnums', return_value=set()))
             stack.enter_context(patch.object(installer, 'current_target', return_value=target))
@@ -352,13 +371,17 @@ class InstallerSafetyTests(unittest.TestCase):
         events, output, failure = self.execute_fixture(prepared)
         self.assertIsNone(failure, output)
         self.assertLess(events.index('runtime-preflight'), events.index('open-clone'))
+        self.assertLess(events.index('migration-preflight'), events.index('open-clone'))
         self.assertLess(events.index('verify-source'), events.index('open-clone'))
         self.assertLess(events.index('verify-target'), events.index('grow-plan'))
         self.assertLess(events.index('grow-plan'), events.index('grow-execute'))
         self.assertLess(events.index('grow-execute'), events.index('final-metadata-verification'))
+        self.assertLess(events.index('final-metadata-verification'),events.index('migration-copy-and-verify'))
         completed = json.loads(output.splitlines()[-1])
         self.assertEqual(completed['event'], 'complete')
         self.assertTrue(completed['data_expansion_verified'])
+        self.assertTrue(completed['user_data_verified']);self.assertTrue(completed['root_auth_preserved'])
+        self.assertEqual(completed['rom_files'],1)
         self.assertEqual(completed['data_actual_bytes'], prepared[2]['data_proposed_bytes'])
         (ARTIFACTS / 'mocked-sequence.json').write_text(json.dumps(dict(
             scope='Isolated physical installer sequence with mocked hashing/copy/utilities and read-only fixture descriptors; no physical install or filesystem resize',
@@ -373,6 +396,14 @@ class InstallerSafetyTests(unittest.TestCase):
                 self.assertNotIn('grow-plan', events)
                 if scenario == 'bad-source-hash': self.assertNotIn('open-clone', events)
                 self.assertNotIn('"event": "complete"', output)
+
+    def test_migration_preflight_failure_prevents_erase_and_copy_failures_never_complete(self):
+        prepared=self.prepared_execution()
+        for scenario in ('migration-space','migration-failed','migration-unverified'):
+            with self.subTest(scenario=scenario):
+                events,output,failure=self.execute_fixture(prepared,scenario)
+                self.assertIsNotNone(failure);self.assertNotIn('"event": "complete"',output)
+                if scenario=='migration-space':self.assertNotIn('open-clone',events)
 
     def test_mismatched_growth_plan_or_missing_token_never_executes_growth(self):
         prepared = self.prepared_execution()

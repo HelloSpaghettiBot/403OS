@@ -230,7 +230,7 @@ def pwrite_all(fd, data, offset):
         offset += count
 
 
-def copy_and_verify(source_fd, target_fd, source_size, target_size, expected_sha, progress=None):
+def copy_and_verify(source_fd, target_fd, source_size, target_size, expected_sha, progress=None, *, readback=True):
     if source_size > target_size or (source_size < target_size and source_size > target_size-TAIL):
         raise FlashError('Image cannot fit alongside obsolete end-GPT clearing range.')
     if progress:
@@ -249,6 +249,10 @@ def copy_and_verify(source_fd, target_fd, source_size, target_size, expected_sha
     os.fsync(target_fd)
     if progress:
         progress('write_complete', source_size)
+    if not readback:
+        if progress:
+            progress('readback_skipped', source_size)
+        return expected_sha
     if hasattr(os, 'posix_fadvise'):
         os.posix_fadvise(target_fd, 0, 0, os.POSIX_FADV_DONTNEED)
     if progress:
@@ -342,11 +346,14 @@ def execute(plan, plan_sha, args, source_fd, disk, identity):
             reported[phase] = offset
             print(json.dumps(dict(event='usb_flash_progress', phase=phase, bytes=offset,
                                   total_bytes=size, percent=round(100*offset/size, 1))), flush=True)
-        actual = copy_and_verify(source_fd, fd, size, disk['size'], plan['image_sha256'], progress)
+        readback = not getattr(args, 'skip_readback', False)
+        actual = copy_and_verify(source_fd, fd, size, disk['size'], plan['image_sha256'], progress, readback=readback)
         if source_stamp(source_fd) != stamp:
             raise FlashError('Source metadata changed during copy; do not trust this USB.')
-        result = dict(status='PASS', image_sha256=actual, image_bytes=size, usb_bytes=disk['size'],
-            full_image_readback='PASS', image_gpt_crc32='PASS', obsolete_end_gpt='CLEARED',
+        result = dict(status='PASS' if readback else 'WRITTEN_UNVERIFIED', image_sha256=actual, image_bytes=size, usb_bytes=disk['size'],
+            full_image_readback='PASS' if readback else 'SKIPPED_BY_EXPLICIT_REQUEST',
+            image_gpt_crc32='PASS' if readback else 'SOURCE_ONLY',
+            obsolete_end_gpt='CLEARED' if readback else 'WRITTEN_UNVERIFIED',
             old_data_preserved=False, secure_full_media_erasure=False, data_expanded=False,
             receipt_directory=str(receipt_dir))
         durable(receipt_dir/'result.json', (json.dumps(result, indent=2)+'\n').encode())
@@ -364,6 +371,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, required=True)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--skip-readback', action='store_true', help='Explicitly skip USB readback and record the write as unverified')
     parser.add_argument('--expected-plan-sha256')
     parser.add_argument('--confirm')
     parser.add_argument('--boot-result', type=Path)

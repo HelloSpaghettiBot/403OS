@@ -64,6 +64,9 @@ int main() {
 
     center.open(PanelKind::Library);
     select(center,"Search games"); center.navigate(Action::Accept);
+    assert(center.view().editing);
+    assert(center.view().input.empty());
+    assert(center.view().status=="Type a game name");
     center.inputText("Pokemon Emerald"); center.submitText();
     assert(!center.active());
     assert(center.takeSearch()=="Pokemon Emerald");
@@ -120,7 +123,7 @@ int main() {
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().critical && !center.view().busy);
         center.open(PanelKind::Library);
-        select(center,"Scan and download"); center.navigate(Action::Accept);
+        select(center,"Download missing cover"); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().busy);
         center.open(PanelKind::DW3); cancelQuery(center);
@@ -154,7 +157,7 @@ int main() {
         center.navigate(Action::Accept);
         assert(!center.view().busy);
         center.open(PanelKind::Library);
-        select(center,"Refresh external drives"); center.navigate(Action::Accept);
+        select(center,"Find games on"); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().busy);
         // Authentication cannot be dismissed into HOME or invoke host services.

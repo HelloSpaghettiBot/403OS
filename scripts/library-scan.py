@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -112,16 +113,22 @@ def identify_system(path):
     return 'unknown'
 
 
-def scan(root):
+def scan(root, deadline=None, maximum_entries=100000):
     root = Path(root).resolve(strict=True)
     if not root.is_dir():
         raise ValueError('Library root must be a directory')
     errors, games, seen = [], [], set()
     def onerror(error):
         errors.append(clean_field(str(error)))
+    entries = 0
     for directory, subdirs, filenames in os.walk(root, followlinks=False, onerror=onerror):
+        entries += len(subdirs) + len(filenames)
+        if entries > maximum_entries or (deadline is not None and time.monotonic() >= deadline):
+            raise ValueError('Game discovery reached its scan limit; the previous library was kept')
         subdirs[:] = sorted(name for name in subdirs if not EXCLUDED.search(name) and not (Path(directory) / name).is_symlink())
         for filename in sorted(filenames):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ValueError('Game discovery reached its scan limit; the previous library was kept')
             path = Path(directory) / filename
             if path.suffix.lower() not in EXTENSIONS or EXCLUDED.search(filename) or path.is_symlink():
                 continue
@@ -244,6 +251,15 @@ def prepare_covers(games, output, cache, fetch=False, maximum_downloads=32):
                 errors.append(clean_field(error))
     jobs, downloads = [], 0
     for game in games:
+        existing = covers / (game['id'] + '.sgo')
+        if existing.is_file() and not existing.is_symlink():
+            with existing.open('rb') as texture:
+                header = texture.read(16)
+            if (len(header) == 16 and header[:8] == b'SGOTEX01' and
+                    struct.unpack('<II', header[8:]) == (400, 480) and
+                    existing.stat().st_size == 16 + 400 * 480 * 4):
+                game.update(cover_texture_path=str(existing), cover_source='cached', cover_status='available')
+                continue
         source = local_cover(game)
         url = ''
         if source is None:
@@ -273,17 +289,34 @@ def prepare_covers(games, output, cache, fetch=False, maximum_downloads=32):
     return sorted(errors)
 
 
+def atomic_text(path, content):
+    if path.is_symlink():
+        raise ValueError('Catalog output must not be a symlink')
+    if path.is_file() and path.read_text(encoding='utf-8') == content:
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def write_catalog(games, errors, root, output):
     fields = ('id', 'title', 'system_id', 'rom_path', 'cover_texture_path')
     content = ''.join('\t'.join(clean_field(game[field]) for field in fields) + '\n' for game in games)
-    (output / 'catalog.tsv').write_text(content, encoding='utf-8')
-    (output / 'catalog.json').write_text(json.dumps(dict(schema=1, root=str(root), games=games,
-        errors=errors, policy='Private references only; no ROM data copied. Cover art is not licensed for redistribution by this project.'), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    atomic_text(output / 'catalog.tsv', content)
+    atomic_text(output / 'catalog.json', json.dumps(dict(schema=1, root=str(root), games=games,
+        errors=errors, policy='Private references only; no ROM data copied. Cover art is not licensed for redistribution by this project.'), ensure_ascii=False, indent=2) + '\n')
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path('/run/media/Luls/Games'))
+    parser.add_argument('--root', type=Path, default=Path('/data/roms'))
     parser.add_argument('--output', type=Path, default=PROJECT / 'artifacts/library')
     parser.add_argument('--cache', type=Path, default=DEFAULT_CACHE)
     parser.add_argument('--fetch-covers', action='store_true', help='Opt in to bounded GitHub cover/index downloads')

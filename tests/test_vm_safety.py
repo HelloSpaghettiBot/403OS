@@ -13,6 +13,12 @@ spec.loader.exec_module(vm)
 
 
 class DiskSafetyTests(unittest.TestCase):
+    def test_existing_password_check_requires_an_installed_disk(self):
+        for arguments in (['live','--expect-existing-profile'],['test','--expect-existing-profile']):
+            with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                vm.parse_arguments(arguments)
+        self.assertTrue(vm.parse_arguments(['test','--disk',str(vm.ARTIFACTS/'installed.qcow2'),'--expect-existing-profile']).expect_existing_profile)
+
     def test_profile_acceptance_requires_the_real_graphical_protocol(self):
         with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
             vm.parse_arguments(['install','--test-profiles'])

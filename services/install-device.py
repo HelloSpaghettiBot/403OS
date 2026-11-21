@@ -29,6 +29,7 @@ DATA_UUID = '8b4a530e-d6d4-4e69-9307-310000000002'
 EFI_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 BLOCK_BYTES = 4 * 1024 * 1024
 GROW_HELPER = Path('/usr/sbin/surface-grow-data')
+SEED_HELPER = Path('/usr/sbin/surface-seed-data')
 
 
 class Refused(ValueError):
@@ -109,9 +110,35 @@ def source_data_layout(descriptor, size, helper=None):
 
 def preflight_utilities():
     growth_helper()
-    for utility in (str(GROW_HELPER), 'sfdisk', 'e2fsck', 'resize2fs'):
+    seeding_helper()
+    for utility in (str(GROW_HELPER), str(SEED_HELPER), 'sfdisk', 'e2fsck', 'resize2fs', 'mount', 'umount'):
         if not shutil.which(utility):
             raise Refused('Required installer/DATA growth utility is not installed: ' + utility)
+
+
+@functools.lru_cache(maxsize=1)
+def seeding_helper():
+    path=no_symlinks(SEED_HELPER);info=path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_mode&0o022 or not os.access(path,os.X_OK):
+        raise Refused('The installed DATA migration helper is unsafe or missing')
+    helper=runpy.run_path(str(path),run_name='surface_installer_seed')
+    if any(not callable(helper.get(name)) for name in ('library_lock','mounted_data','source_plan','public_plan','apply_seed')):
+        raise Refused('The installed DATA migration helper has an incompatible interface')
+    return helper
+
+
+def seed_call(helper,name,*args):
+    try:return helper[name](*args)
+    except ValueError as error:raise Refused('Live DATA migration: '+str(error)) from error
+
+
+def migration_plan(helper,plan):
+    seed_call(helper,'mounted_data')
+    value=seed_call(helper,'source_plan',plan['data_proposed_bytes'])
+    plan.update(user_data_bytes=value['bytes'],user_data_files=value['files'],rom_files=value['rom_files'],
+                user_data_migration=True,root_auth_preserved=value['root_auth_preserved'],
+                migration_manifest_sha256=value['manifest_sha256'])
+    return value
 
 
 def mounted_devices(mountinfo):
@@ -587,6 +614,13 @@ def verify_final_growth(source_descriptor, target, source, plan):
 
 
 def execute_install(arguments):
+    require_guest()
+    helper=seeding_helper()
+    with helper['library_lock']():
+        return execute_install_locked(arguments,helper)
+
+
+def execute_install_locked(arguments,seed_helper):
     require_guest()  # Recheck inside the only function that can open writable.
     if not arguments.target or not arguments.source or not arguments.expected_target_id or not arguments.expected_source_sha256:
         raise Refused('Execution requires explicit target, source, expected target ID, and expected source SHA256')
@@ -599,6 +633,7 @@ def execute_install(arguments):
     source = source_info(arguments.source)
     plan = plan_install(target, source, arguments.expected_target_id, arguments.expected_source_sha256)
     preflight_utilities()
+    migration=migration_plan(seed_helper,plan)
     source_descriptor = os.open(source['path'], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     target_descriptor = None
     try:
@@ -643,11 +678,21 @@ def execute_install(arguments):
         final = current_target(arguments.target, arguments.expected_target_id, boot_devices)
         same_target(target, final)
         filesystem = verify_final_growth(source_descriptor, final, source, plan)
+        emit('progress',phase='preserve-user-data',percent=0,bytes=0,total=migration['bytes'])
+        seeded=seed_call(seed_helper,'apply_seed',arguments.target,arguments.expected_target_id,
+                         filesystem['uuid'],filesystem['bytes'],migration)
+        if (seeded.get('event')!='seed-complete' or seeded.get('target')!=arguments.target or
+            seeded.get('target_id')!=arguments.expected_target_id or seeded.get('verified') is not True or
+            any(seeded.get(key)!=migration[key] for key in ('files','bytes','rom_files','root_auth_preserved'))):
+            raise Refused('Live DATA migration did not return a complete verified receipt')
+        same_target(target,current_target(arguments.target,arguments.expected_target_id,boot_devices))
         emit('complete', target=arguments.target, target_id=arguments.expected_target_id,
              source_sha256=plan['source_sha256'], data_expansion=plan['data_expansion'],
              data_expansion_verified=True, data_actual_bytes=filesystem['bytes'],
              data_filesystem_uuid=filesystem['uuid'], data_partuuid=DATA_UUID,
-             message='Installation verified. Power off first, remove USB boot media after shutdown, then power on to boot internal storage.', automatic_restart=False)
+             user_data_verified=True,user_data_files=seeded['files'],user_data_bytes=seeded['bytes'],
+             rom_files=seeded['rom_files'],root_auth_preserved=seeded['root_auth_preserved'],
+             message='Installation and live games/profiles verified. '+('Your existing password is retained. ' if seeded['root_auth_preserved'] else '')+'Power off first, remove USB boot media after shutdown, then power on to boot internal storage.', automatic_restart=False)
     finally:
         os.close(source_descriptor)
         if target_descriptor is not None:
@@ -686,7 +731,10 @@ def main(argv=None):
             target = current_target(arguments.target, arguments.expected_target_id or target['stable_id'], boot_partition_devnums())
             source = source_info(arguments.source)
             preflight_utilities()
-            print(json.dumps(plan_install(target, source, arguments.expected_target_id, arguments.expected_source_sha256), ensure_ascii=False), flush=True)
+            plan=plan_install(target, source, arguments.expected_target_id, arguments.expected_source_sha256)
+            helper=seeding_helper()
+            with helper['library_lock']():migration_plan(helper,plan)
+            print(json.dumps(plan, ensure_ascii=False), flush=True)
         return 0
     except (OSError, Refused, UnicodeError, subprocess.TimeoutExpired) as error:
         emit('error', message=str(error), target_written=False if not arguments.execute else 'unknown; inspect progress phase')

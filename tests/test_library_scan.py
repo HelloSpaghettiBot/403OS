@@ -78,6 +78,44 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(scanner.select_cover(game, ['Named_Boxarts/Sonic Advance 3 (USA).png', 'Named_Boxarts/Sonic Advance 3 (Europe) (En,Ja,Fr,De,Es,It).png']), 'Named_Boxarts/Sonic Advance 3 (Europe) (En,Ja,Fr,De,Es,It).png')
         self.assertEqual(scanner.display_title('Wolverine - Feral Instinct (SMW Hack)'), 'Wolverine - Feral Instinct (SMW Hack)')
 
+    def test_existing_cover_is_preserved_during_offline_refresh(self):
+        self.rom('A.gba')
+        games,_=scanner.scan(self.roms)
+        output=self.base/'output';(output/'covers').mkdir(parents=True)
+        texture=output/'covers'/(games[0]['id']+'.sgo')
+        content=b'SGOTEX01'+struct.pack('<II',400,480)+bytes(400*480*4)
+        texture.write_bytes(content)
+        with patch.object(scanner,'convert_cover',side_effect=AssertionError('cached cover must survive')), \
+             patch.object(scanner,'request_bytes',side_effect=AssertionError('offline')):
+            self.assertEqual(scanner.prepare_covers(games,output,self.base/'cache',False),[])
+        self.assertEqual(games[0]['cover_texture_path'],str(texture))
+        self.assertEqual(texture.read_bytes(),content)
+
+    def test_atomic_catalog_keeps_mtime_when_unchanged_and_refuses_symlink(self):
+        self.rom('A.gb');games,errors=scanner.scan(self.roms)
+        output=self.base/'output';output.mkdir()
+        scanner.write_catalog(games,errors,self.roms,output)
+        before=(output/'catalog.tsv').stat()
+        scanner.write_catalog(games,errors,self.roms,output)
+        after=(output/'catalog.tsv').stat()
+        self.assertEqual((before.st_ino,before.st_mtime_ns),(after.st_ino,after.st_mtime_ns))
+        (output/'catalog.tsv').unlink();(output/'catalog.tsv').symlink_to(self.roms/'A.gb')
+        with self.assertRaisesRegex(ValueError,'symlink'):
+            scanner.write_catalog(games,errors,self.roms,output)
+
+    def test_scan_limit_preserves_existing_catalog(self):
+        self.rom('A.gb');self.rom('B.gb')
+        with self.assertRaisesRegex(ValueError,'scan limit'):
+            scanner.scan(self.roms,maximum_entries=1)
+
+    def test_flat_directory_deadline_is_checked_between_files(self):
+        self.rom('A.gba');self.rom('B.gba')
+        with patch.object(scanner.time,'monotonic',side_effect=[0,0,10]), \
+             patch.object(scanner,'identify_system',return_value='gba') as identify:
+            with self.assertRaisesRegex(ValueError,'previous library was kept'):
+                scanner.scan(self.roms,deadline=5)
+        self.assertEqual(identify.call_count,1)
+
     def test_unreadable_file_reports_error_and_keeps_other_games(self):
         self.rom('Denied.iso')
         self.rom('Working.gba')

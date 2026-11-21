@@ -100,7 +100,7 @@ struct Session {
             if(page==Page::Games && system.empty()) items.insert(items.begin(),{
                 {"favorites","Favorites","Your favorite games",""},
                 {"recent","Recently played","Your game history",""},
-                {"library-setup","Search and library","Find games or index your library drive",""}});
+                {"library-setup","Search games","Search by name; game drives are discovered automatically",""}});
         }
         if(items.empty()) {
             model.message=page==Page::Favorites?"No favorites yet. Select a game and press Y / F to add it.":page==Page::Recent?"Your played games will appear here.":page==Page::Search?"No games match your search.":"No games found for this system. Use Search and library to scan your game files.";
@@ -115,6 +115,7 @@ struct Session {
         const auto id=model.selected().id;
         const auto page=model.page;
         catalog_time=changed;library=read_library(catalog);progress.apply(library.games);
+        std::printf("SURFACE_LIBRARY_UPDATED games=%zu\n",library.games.size());std::fflush(stdout);
         home=library.games;home.insert(home.end(),pinned.begin(),pinned.end());progress.apply(home);
         show(model,page,filter_system);
         for(std::size_t i=0;i<model.apps.size();++i) if(model.apps[i].id==id) {model.tile=i;break;}
@@ -151,7 +152,7 @@ void activate(Model& model, Process& child, Session& session) {
     if(model.selected().id=="library") {session.show(model,Page::Games);return;}
     if(model.selected().id=="favorites") {session.show(model,Page::Favorites);return;}
     if(model.selected().id=="recent") {session.show(model,Page::Recent);return;}
-    if(model.selected().id=="library-setup") {session.controls.open(PanelKind::Library);return;}
+    if(model.selected().id=="library-setup") {session.controls.open(PanelKind::Library);session.controls.navigate(Action::Accept);return;}
     if(model.selected().id=="pokemmo") {session.controls.open(PanelKind::PokeMMO);return;}
     if(model.selected().id=="dw3") {session.controls.open(PanelKind::DW3);return;}
     if(model.selected().id=="windows") {session.controls.open(PanelKind::Windows);return;}

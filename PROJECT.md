@@ -14,6 +14,12 @@ and touchscreen are first-class input paths. System status must reflect real
 hardware and service state. Crashed or closed applications must return safely
 to HOME. Original or appropriately licensed assets are required.
 
+Games in local `/data/roms` and safely mounted USB/removable-SD libraries are
+discovered automatically and become available in HOME without a manual scan.
+Title search uses the discovered catalog. Ordinary discovery makes no network
+requests; missing cover downloads require an explicit action. External game
+volumes remain read only, and incomplete discovery must retain the prior catalog.
+
 The default image includes eleven emulator engines, Cog/WPE WebKit,
 Moonlight, Tailscale and Wine64/UMU. PokeMMO setup downloads the official client
 on explicit request; Digimon World 3 Online imports an unchanged user-supplied
@@ -38,6 +44,15 @@ discovery is automatic. The inner image has no nested installer payload.
 An internal installation verifies the embedded source, requires selection
 and an exact destructive confirmation for the target disk, clones/readbacks
 it, and expands only the fresh unmounted DATA filesystem.
+
+After cloning and expansion, the physical installer migrates supported local
+live-USB DATA into the fresh target: games, BIOS files, saves, settings,
+application data and profiles, including existing password hashes. Preflight
+checks capacity and source paths before erasure. Migration preserves ownership
+and permissions, verifies file contents, and refuses changed source data or
+unsupported external catalog references. It does not preserve files already
+on the selected target or copy the nested installer payload. Authentication
+remains locked at the next boot and existing profile passwords remain valid.
 
 USB writing and internal installation are distinct destructive operations.
 Each requires review of the actual target; no unattended real-device erase is
