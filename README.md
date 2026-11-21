@@ -20,6 +20,8 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
 Supply your own games and required BIOS files. Public builds contain no ROMs,
 commercial game artwork, proprietary clients or account credentials.
 
+![403 OS installer verifying internal storage in QEMU](docs/images/installer.png)
+
 ## Getting started
 
 [Installation and recovery](docs/INSTALL_RECOVERY.md) ·
