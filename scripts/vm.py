@@ -418,6 +418,7 @@ def parse_arguments(argv=None):
                         help="Keep the visible VM open after boot checks for interactive use")
     parser.add_argument("--library-root", type=Path,
                         help="Explicit read-only user game directory to share with this VM")
+    parser.add_argument('--expect-library-games',type=int,default=0,help='Require this many catalog entries and real embedded cover loading')
     parser.add_argument("--catalog", type=Path,default=ROOT / "artifacts/library/catalog.tsv")
     parser.add_argument("--ovmf", default="/usr/share/edk2/ovmf/OVMF_CODE.fd")
     args = parser.parse_args(argv)
@@ -429,6 +430,8 @@ def parse_arguments(argv=None):
         parser.error("--test-display requires mode=test and an explicit existing --disk")
     if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
         parser.error('--test-install-ui requires a disposable live acceptance run')
+    if not 0<=args.expect_library_games<=100000 or args.expect_library_games and args.mode=='install':
+        parser.error('--expect-library-games requires a live/installed boot and a bounded nonnegative count')
     return args
 
 
@@ -547,6 +550,11 @@ def main():
                 vm.wait_for("SURFACE_LIBRARY_MOUNT_PASS")
                 vm.wait_for("SURFACE_ARTWORK_LOADED /library/index/covers/")
                 summary["checks"]["read_only_user_library_and_cover_loading"]="PASS"
+            if args.expect_library_games:
+                vm.wait_for(f'SURFACE_LIBRARY games={args.expect_library_games} systems=',20)
+                vm.wait_for('SURFACE_ARTWORK_LOADED /data/library/covers/',30)
+                summary['checks']['embedded_private_library_and_cover_loading']='PASS'
+                summary['embedded_library_games']=args.expect_library_games
             # Launch the browser through the real HOME dock, then close it
             # through the global evdev chord while HOME has no keyboard focus.
             offset=len(vm.log.read_text(errors="replace"))
