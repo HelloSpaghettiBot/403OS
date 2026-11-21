@@ -12,6 +12,18 @@ scripts/build.sh
 scripts/vm-create.sh --visible
 ```
 
+For the disposable GUI acceptance run, including account setup, profile
+switching, live rotation and installation into a new virtual SATA disk:
+
+```sh
+scripts/vm-create.sh --test-profiles --test-rotation --test-install-ui
+```
+
+The host driver supplies synthetic test passwords through the normal UI.
+Images contain no enrolled account password or authentication bypass.
+These checks use virtual devices and do not validate physical controllers,
+touch input or accelerometers.
+
 Builds use ten workers, a 24 GiB memory throttle, 32 GiB hard/container caps
 and 1 GiB swap. Only one heavy workload runs at a time. VM host memory has a
 separate 6 GiB cap. The first build downloads several GB; incremental builds

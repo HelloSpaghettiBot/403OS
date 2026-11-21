@@ -1,0 +1,5 @@
+# Input classification runs in 60-input-id.rules. Grant controller reports to
+# application users without exposing keyboard, touchscreen or touchpad events.
+# No hidraw grant: Ipega's standard Linux evdev path does not require one.
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event[0-9]*", ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_KEYBOARD}!="1", ENV{ID_INPUT_TOUCHSCREEN}!="1", ENV{ID_INPUT_TOUCHPAD}!="1", GROUP="gamepad", MODE="0660"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="js[0-9]*", ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_KEYBOARD}!="1", ENV{ID_INPUT_TOUCHSCREEN}!="1", ENV{ID_INPUT_TOUCHPAD}!="1", GROUP="gamepad", MODE="0660"

@@ -6,7 +6,12 @@
 #include <vector>
 
 namespace surface {
-enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows, Display };
+enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows, Display, Profiles };
+struct ProfileIdentity {
+    std::string name,home,state;
+    unsigned uid=0,gid=0;
+    bool admin=false;
+};
 struct ControlView {
     std::string title;
     std::vector<std::string> rows;
@@ -37,6 +42,15 @@ public:
     const ControlView& view() const;
     std::optional<std::vector<std::string>> takeLaunch();
     std::optional<std::string> takeSearch();
+    void enableProfiles();
+    bool profilesLocked() const;
+    bool administrator() const;
+    std::optional<ProfileIdentity> currentProfile() const;
+    bool takeProfileChanged();
+    bool takeLockRequest();
+    void lockProfiles();
+    std::string passwordPrompt() const;
+    std::optional<std::string> takeProfileNotice();
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

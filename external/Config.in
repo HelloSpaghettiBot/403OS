@@ -1,5 +1,6 @@
 source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-sdl3/Config.in"
 source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-shell/Config.in"
+source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-rotation/Config.in"
 source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-emulators/Config.in"
 source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-tailscale/Config.in"
 source "$BR2_EXTERNAL_SURFACE_PATH/package/surface-moonlight/Config.in"

@@ -1,4 +1,5 @@
 """Image audio inventory contract using disposable output directories only."""
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -16,7 +17,17 @@ class AudioImageInventory(unittest.TestCase):
         self.base=Path(self.temporary.name);self.target=self.base/'target';self.target.mkdir()
         (self.target/'etc').mkdir();(self.target/'etc/fstab').write_text('# SURFACE_DATA fixture\n')
         self.images=self.base/'images';self.images.mkdir()
-        self.environment=dict(os.environ,TARGET_DIR=str(self.target),BINARIES_DIR=str(self.images))
+        build=self.base/'build';kernel=build/'linux-6.12.118';kernel.mkdir(parents=True)
+        spec=importlib.util.spec_from_file_location('hardware_check',ROOT/'scripts/check-hardware-config.py')
+        hardware=importlib.util.module_from_spec(spec);spec.loader.exec_module(hardware)
+        (kernel/'.config').write_text(''.join('CONFIG_'+name+'=y\n' for group in hardware.REQUIRED.values() for name in group))
+        (self.base/'.config').write_text('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG=y\n')
+        bluez=build/'bluez5_utils-5.86';bluez.mkdir()
+        (bluez/'config.log').write_text('  $ ./configure --enable-hid --enable-hog\n')
+        for name in hardware.FIRMWARE:
+            path=self.target/'lib/firmware'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture')
+        module=self.target/'usr/lib/weston/surface-rotation.so';module.parent.mkdir(parents=True);module.write_bytes(b'fixture')
+        self.environment=dict(os.environ,TARGET_DIR=str(self.target),BINARIES_DIR=str(self.images),BUILD_DIR=str(build))
         for name in REQUIRED:
             binary=self.target/name;binary.parent.mkdir(parents=True,exist_ok=True)
             binary.write_text('# fixture executable, never executed\n');binary.chmod(0o755)

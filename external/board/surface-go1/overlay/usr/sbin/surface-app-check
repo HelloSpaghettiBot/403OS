@@ -7,6 +7,7 @@ up/login or contacts a Sunshine host. Root VM automation captures the browser
 while SURFACE_BROWSER_DISPLAY_READY is displayed, then observes HOME return afterward.
 """
 import argparse
+import collections
 import hashlib
 import http.server
 import json
@@ -17,6 +18,7 @@ import re
 import secrets
 import signal
 import shutil
+import socket
 import stat
 import struct
 import subprocess
@@ -33,6 +35,9 @@ TEST_OPTIONS=Path('/run/surface-test-options')
 MOUNT_INFO=Path('/proc/self/mountinfo')
 VM_NAME='Surface Go OS Disposable Test VM'
 INSTALLER_PAYLOAD=Path('/data/SurfaceGoGamingOS/surface-go.img')
+ROTATION_MODULE=Path('/usr/lib/weston/surface-rotation.so')
+ROTATION_SOCKET=Path('/run/surface/display/rotation.sock')
+DISPLAY_STATE=(Path('/data/config/display.json'),Path('/run/surface/display/pending.json'),Path('/data/config/rotation.json'))
 
 
 def emit(marker,**fields):
@@ -201,6 +206,7 @@ class PageServer(http.server.ThreadingHTTPServer):
         super().__init__(('127.0.0.1',0),PageHandler)
         self.nonce=nonce;self.page_requested=threading.Event();self.rendered=threading.Event()
         self.tls_success=threading.Event();self.tls_failure=threading.Event()
+        self.geometry_condition=threading.Condition();self.geometries=collections.deque(maxlen=64)
 
 
 class PageHandler(http.server.BaseHTTPRequestHandler):
@@ -212,6 +218,15 @@ class PageHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(403);return
         if uri.path=='/rendered':
             self.server.rendered.set();self.send_response(204);self.end_headers();return
+        if uri.path=='/geometry':
+            fields=('width','height','screen_width','screen_height')
+            if set(query)!={'token',*fields} or any(len(query.get(key,[]))!=1 or
+                not re.fullmatch(r'[1-9][0-9]{0,4}',query[key][0]) or int(query[key][0])>16384 for key in fields):
+                self.send_error(400);return
+            value={key:int(query[key][0]) for key in fields};value['at']=time.monotonic()
+            with self.server.geometry_condition:
+                self.server.geometries.append(value);self.server.geometry_condition.notify_all()
+            self.send_response(204);self.end_headers();return
         if uri.path in ('/tls-success','/tls-failure'):
             event=self.server.tls_success if uri.path=='/tls-success' else self.server.tls_failure
             event.set();self.send_response(204);self.end_headers();return
@@ -225,7 +240,13 @@ p{line-height:1.5}.tag{font-size:24px;color:#8dcaf9}</style>
 <p>This page was served over the guest's local network.</p><p id="state">Waiting for the first rendered frame…</p>
 <p id="tls">Checking HTTPS with certificate validation…</p>
 <p>The test will close this browser and return to HOME.</p></article>
-<script>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+<script>
+const reportGeometry=()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+ fetch('/geometry?token='''+self.server.nonce+'''&width='+innerWidth+'&height='+innerHeight+
+  '&screen_width='+screen.width+'&screen_height='+screen.height,{cache:'no-store'});
+}));
+window.addEventListener('resize',reportGeometry);setInterval(reportGeometry,400);reportGeometry();
+requestAnimationFrame(()=>requestAnimationFrame(()=>{
  document.getElementById('state').textContent='JavaScript and frame callbacks are working.';
  fetch('/rendered?token='''+self.server.nonce+'''',{cache:'no-store'});
  fetch('https://buildroot.org/',{mode:'no-cors',cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'}).then(()=>{
@@ -245,6 +266,129 @@ def wayland_committed(log):
     try:text=log.read_text(errors='replace')[-2*1024*1024:]
     except OSError:return False
     return 'wl_surface' in text and '.commit(' in text and ('xdg_surface' in text or 'xdg_toplevel' in text)
+
+
+def process_identity(pid,name):
+    if type(pid) is not int or pid<=0:raise RuntimeError('Rotation probe received an invalid process ID')
+    node=Path('/proc')/str(pid)
+    text=(node/'stat').read_text()
+    if len(text)>8192 or ')' not in text:raise RuntimeError('Process identity is unavailable')
+    fields=text[text.rfind(')')+1:].split()
+    if len(fields)<20 or fields[0]=='Z' or not fields[19].isdigit() or (node/'exe').resolve().name!=name:
+        raise RuntimeError('The expected live '+name+' process is unavailable')
+    return dict(pid=pid,start_ticks=int(fields[19]),executable=name)
+
+
+
+def browser_process(process,proc=Path('/proc')):
+    """Identify Cog inside this launch's own dbus-run-session process group."""
+    if process.poll() is not None:raise RuntimeError('Browser launcher has already exited')
+    candidates=[]
+    nodes=list(proc.iterdir())
+    if len(nodes)>8192:raise RuntimeError('Process inventory exceeded the rotation probe bound')
+    for node in nodes:
+        if not node.name.isdigit():continue
+        try:
+            text=(node/'stat').read_text();fields=text[text.rfind(')')+1:].split()
+            if (len(fields)>=20 and fields[0]!='Z' and fields[2:4]==[str(process.pid)]*2 and
+                    (node/'exe').resolve(strict=True).name=='cog'):
+                candidates.append(int(node.name))
+        except (OSError,ValueError):continue
+    if len(candidates)!=1:raise RuntimeError('Expected one live Cog in the browser launcher process group')
+    return candidates[0]
+
+
+def display_state_snapshot():
+    result={}
+    for path in DISPLAY_STATE:
+        try:descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+        except FileNotFoundError:result[str(path)]=None;continue
+        with os.fdopen(descriptor,'rb') as stream:
+            info=os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size>4096:raise RuntimeError('Display configuration is not a bounded regular file')
+            raw=stream.read(4097)
+            if len(raw)!=info.st_size:raise RuntimeError('Display configuration changed during the probe snapshot')
+        result[str(path)]=dict(sha256=hashlib.sha256(raw).hexdigest(),inode=info.st_ino,mtime_ns=info.st_mtime_ns,mode=info.st_mode)
+    return result
+
+
+def vm_rotation_output(root=Path('/sys/class/drm')):
+    names=[]
+    for node in sorted(root.glob('card*-*')):
+        match=re.fullmatch(r'card[0-9]+-([A-Za-z][A-Za-z0-9-]{0,63})',node.name)
+        if match and (node/'status').read_text().strip()=='connected':names.append(match[1])
+    if len(names)!=1:raise RuntimeError('Rotation acceptance requires exactly one connected VM display')
+    return names[0]
+
+
+def rotation_command(output,transform):
+    # Both this caller and the native module grant virtual-output eligibility
+    # only to the exact disposable VM, never to Surface hardware.
+    if VM_DMI.read_text().strip()!=VM_NAME or not ROTATION_MODULE.is_file():
+        raise RuntimeError('Live rotation acceptance is restricted to the disposable VM with its real module')
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,63}',output) or transform not in ('normal','90'):
+        raise RuntimeError('Invalid rotation acceptance request')
+    info=ROTATION_SOCKET.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077:
+        raise RuntimeError('The live compositor rotation socket is not root private')
+    with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as client:
+        client.settimeout(2);client.connect(str(ROTATION_SOCKET))
+        pid,uid,_gid=struct.unpack('3i',client.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+        if uid!=0:raise RuntimeError('Rotation acceptance is not connected to the root compositor')
+        identity=process_identity(pid,'weston')
+        client.sendall(f'{output} {transform}'.encode('ascii'));reply=client.recv(256)
+    if reply!=b'OK':raise RuntimeError('The native compositor rejected rotation: '+reply.decode(errors='replace')[:160])
+    return identity
+
+
+def wait_browser_geometry(server,process,since,expected=None,timeout=8):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if process.poll() is not None:raise RuntimeError('The real browser exited during live rotation')
+        with server.geometry_condition:
+            samples=[value for value in server.geometries if value['at']>=since]
+            if len(samples)>=2:
+                first,last=samples[-2:]
+                shape=(last['width'],last['height'])
+                if ((first['width'],first['height'])==shape and last['at']-first['at']>=.1 and
+                        (expected is None or shape==expected)):
+                    return {key:last[key] for key in ('width','height','screen_width','screen_height')}
+            server.geometry_condition.wait(timeout=min(.1,max(0,deadline-time.monotonic())))
+    raise RuntimeError('The live Wayland browser did not report the expected stable logical geometry')
+
+
+def rotation_runtime_check(server,process,run):
+    guard()
+    if VM_DMI.read_text().strip()!=VM_NAME:
+        return dict(status='NOT_RUN',reason='Rotation acceptance is restricted to the disposable VM')
+    if not ROTATION_MODULE.is_file():raise RuntimeError('The real Weston rotation module is missing from this test image')
+    before=display_state_snapshot();output=vm_rotation_output()
+    browser=process_identity(browser_process(process),'cog');baseline=wait_browser_geometry(server,process,time.monotonic())
+    if baseline['width']==baseline['height']:raise RuntimeError('A square viewport cannot prove a 90-degree output transform')
+    compositor=None;changed=False;rotated=restored=None
+    try:
+        changed=True;since=time.monotonic();compositor=rotation_command(output,'90')
+        rotated=wait_browser_geometry(server,process,since,(baseline['height'],baseline['width']))
+        if process_identity(browser['pid'],'cog')!=browser or process_identity(compositor['pid'],'weston')!=compositor:
+            raise RuntimeError('The compositor or browser process changed during rotation')
+    finally:
+        if changed:
+            since=time.monotonic();restoring_compositor=rotation_command(output,'normal')
+            restored=wait_browser_geometry(server,process,since,(baseline['width'],baseline['height']))
+            if compositor is not None and restoring_compositor!=compositor:
+                raise RuntimeError('The compositor was restarted before restoring native orientation')
+    if process_identity(browser['pid'],'cog')!=browser or process_identity(compositor['pid'],'weston')!=compositor:
+        raise RuntimeError('The compositor or browser process changed after restoring native orientation')
+    if display_state_snapshot()!=before:raise RuntimeError('Live rotation modified a saved resolution, pending trial or preference')
+    result=dict(status='PASS',mode='live Weston module with the real Wayland WebKit client',output=output,
+                baseline=baseline,rotated=rotated,restored=restored,compositor=compositor,browser=browser,
+                compositor_restarted=False,browser_restarted=False,resolution_state_unchanged=True,
+                physical_accelerometer='UNVERIFIED: this VM probe does not supply sensor readings')
+    private_json(run/'rotation.json',result)
+    emit('SURFACE_ROTATION_RUNTIME_PASS',output=output,logical_size=f"{baseline['width']}x{baseline['height']}",
+         rotated=f"{rotated['width']}x{rotated['height']}",restored=f"{restored['width']}x{restored['height']}",
+         weston_pid=compositor['pid'],browser_pid=browser['pid'],processes='preserved',resolution_state='unchanged')
+    return result
 
 
 def browser_check(run,hold):
@@ -270,6 +414,9 @@ def browser_check(run,hold):
                     ready=True;break
                 time.sleep(.1)
             if not ready:raise RuntimeError('browser did not prove HTTP, JavaScript, CA-validated HTTPS and Wayland readiness before deadline')
+            try:rotation=rotation_runtime_check(server,process,run)
+            except (OSError,ValueError,RuntimeError) as error:
+                emit('SURFACE_ROTATION_RUNTIME_FAIL',reason=error);raise
             emit('SURFACE_BROWSER_DISPLAY_READY',http='guest_loopback',javascript='frame_callback',https='buildroot.org_CA_validated',wayland='committed',hold_seconds=hold)
             until=time.monotonic()+hold
             while time.monotonic()<until:
@@ -283,6 +430,7 @@ def browser_check(run,hold):
         return {'status':'PASS','network':'local HTTP request and rendered JavaScript callback','wayland':'surface commit observed',
                 'tls':{'status':'PASS','url':'https://buildroot.org/','mode':'browser fetch, no-cors','certificate_validation':True},
                 'alive_seconds':round(time.monotonic()-started,1),'close_method':'Ctrl+W via keyboard input','exit_code':code,
+                'rotation':rotation,
                 'visual_verification':'host QMP screenshot required','log':str(log)}
     finally:
         if process is not None:stop_group(process)

@@ -8,6 +8,7 @@ the last confirmed setting (or the display's preferred mode).
 import argparse
 import ctypes
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,8 @@ VM_DMI=Path('/sys/class/dmi/id/product_name')
 TRIAL_SECONDS=45
 MODE=re.compile(r'[1-9][0-9]{2,3}x[1-9][0-9]{2,3}')
 OUTPUT=re.compile(r'[A-Za-z][A-Za-z0-9-]{0,63}')
+_rotation_spec=importlib.util.spec_from_file_location('surface_orientation',Path(__file__).with_name('orientation.py'))
+orientation=importlib.util.module_from_spec(_rotation_spec);_rotation_spec.loader.exec_module(orientation)
 
 
 def guard():
@@ -157,6 +160,28 @@ def selection(value,outputs):
 class Settings:
     def __init__(self,config=CONFIG,runtime=RUNTIME):
         self.config=config;self.runtime=runtime;self.pending=runtime/'pending.json';self.failure=runtime/'fallback.json'
+        self.rotation_config=config.with_name('rotation.json');self.rotation_state=runtime/'rotation.json'
+    def rotation_preference(self):
+        try:value=read_json(self.rotation_config)
+        except (ValueError,OSError):value=None
+        if not isinstance(value,dict) or type(value.get('enabled')) is not bool:return dict(enabled=True,locked_transform='normal')
+        locked=value.get('locked_transform','normal')
+        return dict(enabled=value['enabled'],locked_transform=locked if locked in orientation.TRANSFORMS.values() else 'normal')
+    def rotation_status(self):
+        preference=self.rotation_preference()
+        try:state=read_json(self.rotation_state)
+        except (ValueError,OSError):state=None
+        if not isinstance(state,dict):state={}
+        return dict(rotation_enabled=preference['enabled'],rotation_available=bool(state.get('available',False)),
+                    rotation_transform=state.get('transform','normal'),rotation_orientation=state.get('orientation','normal'),
+                    rotation_sensor=state.get('sensor',''),rotation_matrix_source=state.get('matrix_source',''),
+                    rotation_suspended=bool(state.get('suspended',False)),
+                    rotation_message=state.get('message','Waiting for the display accelerometer supervisor.'))
+    def set_rotation(self,enabled):
+        status=self.rotation_status()
+        write_json(self.rotation_config,dict(enabled=enabled,locked_transform=status['rotation_transform']))
+        return dict(event='rotation-preference',rotation_enabled=enabled,
+                    message='Automatic screen rotation enabled.' if enabled else 'Automatic rotation disabled; current orientation is locked.')
     def saved(self,outputs):
         try:return selection(read_json(self.config),outputs)
         except (ValueError,OSError):return None
@@ -173,7 +198,7 @@ class Settings:
     def status(self,outputs):
         now=time.monotonic();trial=self.trial(outputs,now)
         fallback=read_json(self.failure)
-        return dict(event='display-status',outputs=outputs,saved=self.saved(outputs),pending=trial,
+        return dict(event='display-status',outputs=outputs,saved=self.saved(outputs),pending=trial,**self.rotation_status(),
                     trial_active=bool(trial),trial_output=trial['output'] if trial else '',trial_mode=trial['mode'] if trial else '',
                     remaining_seconds=max(0,int(trial['deadline']-now+.999)) if trial else 0,
                     message='Keep this resolution within 45 seconds or it will revert.' if trial else
@@ -195,6 +220,53 @@ class Settings:
     def revert(self,message='Resolution restored to the last confirmed setting.'):
         self.pending.unlink(missing_ok=True);write_json(self.failure,dict(message=message))
         return dict(event='display-reverted',message=message)
+
+
+class Rotation:
+    def __init__(self,settings):
+        self.settings=settings;self.worker=orientation.SensorWorker();self.filter=orientation.Debounce()
+        self.current='normal';self.output='';self.sample={};self.sample_at=-100.;self.retry=0.;self.last_state=None
+    def reset_compositor(self):
+        self.current='normal';self.output='';self.retry=0.;self.filter.reset()
+    def update(self,outputs,trial,now=None):
+        now=time.monotonic() if now is None else now
+        preference=self.settings.rotation_preference();output=orientation.internal_output(outputs)
+        enabled=preference['enabled'];message='Automatic rotation is disabled; the current orientation is locked.'
+        suspended=bool(trial);available=False
+        if enabled and output:
+            try:value=self.worker.poll(now)
+            except (OSError,ValueError) as error:value=dict(available=False,message=str(error))
+            if value is not None:self.sample=value;self.sample_at=now
+            available=bool(self.sample.get('available',False)) and now-self.sample_at<2.5
+            message=self.sample.get('message','Waiting for stable accelerometer readings.')
+            if self.sample.get('available') and not available:message='Waiting for a fresh accelerometer reading; orientation is unchanged.'
+            if suspended:
+                self.filter.reset();message='Automatic rotation is paused until the resolution trial is kept or reverted.'
+            elif available:
+                desired=self.filter.update(self.sample['vector'],self.current,now) if value is not None else None
+                if not orientation.MODULE.is_file():
+                    desired=None;available=False;message='The Weston live rotation module is not installed.'
+                elif desired and now>=self.retry:
+                    try:
+                        orientation.apply_transform(output,desired)
+                        self.current=desired;self.output=output;message='Screen orientation updated without restarting applications.'
+                    except (OSError,ValueError) as error:
+                        message=str(error);available=False;self.retry=now+10;self.filter.reset()
+                elif now<self.retry:available=False;message='Live rotation is unavailable; retrying after the compositor cooldown.'
+                else:message='Automatic screen rotation is monitoring the accelerometer.'
+            else:self.filter.reset()
+        else:
+            self.worker.stop();self.filter.reset()
+            if not output:message='No unambiguous internal display is connected; automatic rotation is inactive.'
+            elif not trial and preference['locked_transform']!=self.current and now>=self.retry:
+                try:
+                    orientation.apply_transform(output,preference['locked_transform']);self.current=preference['locked_transform'];self.output=output
+                except (OSError,ValueError) as error:message=str(error);self.retry=now+10
+        label=next((label for label,transform in orientation.TRANSFORMS.items() if transform==self.current),'normal')
+        state=dict(available=available,transform=self.current,orientation=label,suspended=suspended,
+                   sensor=self.sample.get('sensor',''),matrix_source=self.sample.get('matrix_source',''),message=message)
+        if state!=self.last_state:write_json(self.settings.rotation_state,state);self.last_state=state
+    def close(self):self.worker.stop()
 
 
 def weston_config(outputs,chosen):
@@ -223,7 +295,7 @@ def session(settings,renderer):
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     running=[True]
     for signum in (signal.SIGTERM,signal.SIGINT):signal.signal(signum,lambda *_:running.__setitem__(0,False))
-    compositor=shell=None;accepted=False;failures=0;signature=None
+    compositor=shell=None;accepted=False;failures=0;signature=None;rotation=Rotation(settings)
     runtime=settings.runtime.parent;socket=runtime/'wayland-0';config=runtime/'weston-display.ini'
     serial=SERIAL.open('ab',buffering=0)
     try:
@@ -236,8 +308,11 @@ def session(settings,renderer):
             if compositor is None or desired!=signature:
                 terminate(shell);shell=None;terminate(compositor);compositor=None
                 config.write_text(weston_config(outputs,chosen));os.chmod(config,0o600)
-                compositor=subprocess.Popen(['weston','--backend=drm','--renderer='+renderer,'--xwayland',
-                    '--socket=wayland-0','--config='+str(config),'--log=/data/logs/weston.log'],start_new_session=True)
+                command=['weston','--backend=drm','--renderer='+renderer,'--xwayland',
+                    '--socket=wayland-0','--config='+str(config),'--log=/data/logs/weston.log']
+                if orientation.MODULE.is_file():command.append('--modules='+str(orientation.MODULE))
+                compositor=subprocess.Popen(command,start_new_session=True)
+                rotation.reset_compositor()
                 signature=desired
                 ready=False
                 for _ in range(100):
@@ -263,6 +338,7 @@ def session(settings,renderer):
                     else:settings.config.unlink(missing_ok=True)
                     continue
                 raise RuntimeError('Weston stopped unexpectedly')
+            rotation.update(outputs,trial)
             if shell is None:
                 shell=subprocess.Popen(['/usr/bin/surface-shell'],start_new_session=True,stdout=serial,stderr=subprocess.STDOUT);shell_started=time.monotonic()
             elif shell.poll() is not None:
@@ -273,7 +349,7 @@ def session(settings,renderer):
                 shell=None;time.sleep(2)
             time.sleep(.2)
     finally:
-        terminate(shell);terminate(compositor);serial.close();os.close(lock)
+        rotation.close();terminate(shell);terminate(compositor);serial.close();os.close(lock)
 
 
 def main(argv=None):
@@ -282,17 +358,21 @@ def main(argv=None):
     group.add_argument('--status',action='store_true');group.add_argument('--set',nargs=2,metavar=('OUTPUT','MODE'))
     group.add_argument('--confirm',action='store_true');group.add_argument('--revert',action='store_true')
     group.add_argument('--session',action='store_true')
+    group.add_argument('--autorotate',choices=('on','off'))
+    group.add_argument('--rotation-monitor',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--renderer',choices=('gl','pixman'),default='pixman')
     args=parser.parse_args(argv)
     try:
         guard();settings=Settings()
+        if args.rotation_monitor:orientation.monitor();return 0
         if args.session:session(settings,args.renderer);return 0
         private_directory(settings.runtime)
         lock=os.open(settings.runtime/'settings.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
         try:
             fcntl.flock(lock,fcntl.LOCK_EX)
             outputs=inventory()
-            if args.status:value=settings.status(outputs)
+            if args.autorotate:value=settings.set_rotation(args.autorotate=='on')
+            elif args.status:value=settings.status(outputs)
             elif args.set:value=settings.set(*args.set,outputs)
             elif args.confirm:value=settings.confirm(outputs)
             else:value=settings.revert()

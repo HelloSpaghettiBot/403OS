@@ -1,71 +1,66 @@
 # VM test report
 
-## Current click-through installer
+## Current compiled artifacts
 
-Public outer image SHA-256:
-`5c374e5e6de71d2f2153611ce7e9336a67b152f2c8575ebb8acb4396ff0c5b99`.
-Pristine installation payload SHA-256:
-`55caaa5b0f45e6ec56d74c47cc0c78cf189d20e9ad33ffaab5a71c7f1f09f7ba`.
-Both are 6,510,628,864 logical bytes. Embedded full-file readback and
-root-owned read-only payload metadata passed at build time.
+| Artifact | SHA-256 |
+| --- | --- |
+| Public live USB | `8fbfb8494ae5b66896f76690fd239fcbdc1cb6abe434b1e137a45ccb2b5d91f2` |
+| Pristine installation payload | `664d6c92e2132c2457696ad626c46c08167c2a4b7366ad1626a69ba95eccb7c1` |
 
-`20261120-221932-live` used OVMF/KVM, 4 GiB RAM, four CPUs and an 1800×1200
-framebuffer. It exercised the production GUI installer against a newly
-created 64 GiB SATA disk, including the read-only disk review, Cancel default,
-explicit Install action, source verification, complete copy/readback,
-partition validation, pristine DATA growth and final UI shutdown. The
-`click_installer_copy_readback_data_growth` check is PASS. No host block device
-or physical Surface storage was involved.
+Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
+payload readback, root ownership, mode 0444 and absence of a recursive payload.
 
-All implemented live checks passed: UEFI graphical HOME, root/DATA mounts,
-keyboard/framebuffer changes, guest keyboard/gamepad/touch injection,
-DHCP/DNS/HTTPS, Bluetooth daemon, rendered browser/JavaScript/Ctrl+W,
-browser HOME launch/global return, eleven engine probes, NES input/SRAM
-reload, Wine Windows command exit, Moonlight binary startup, Tailscale daemon
-and policy routing, and non-silent PCM output. Overall status is PARTIAL for
-hardware, recovery, first-boot Tailscale persistence and enrolled streaming.
+## Live boot and GUI installation
 
-The first GUI harness run `20261120-221727-live` stopped during read-only
-review because its serial assertion did not account for ATA WWID formatting.
-No target install started in that failed run. The corrected harness accepts
-only the uniquely serialized disposable target and the successful rerun is
-listed above. Historical failures remain in artifacts.
+`20261121-084511-live` used QEMU 11.1.3, OVMF/KVM, 4 GiB RAM, four virtual CPUs
+and an 1800×1200 framebuffer. It booted through UEFI with no direct kernel
+boot. All implemented checks passed; there were no FAIL checks.
 
-## Display and physical limits
+- Root's first-run password enrollment and confirmation passed through HOME.
+- A secondary user was created and authenticated. Its actual browser process
+  reported real, effective and saved UID/GID 2000. Browser HTTPS load, global
+  return to HOME, logout and switching back to root passed.
+- The native Weston module rotated the real WebKit viewport from 1800×1200
+  to 1200×1800 and restored it. Browser and compositor PID/start-time identity
+  and saved display state stayed unchanged. This supplied no accelerometer
+  readings and does not establish physical sensor behavior.
+- The production GUI installer reviewed a unique disposable 64 GiB SATA disk,
+  with Cancel selected by default. Explicit installation passed source
+  verification, complete copy/readback, GPT checks, fresh DATA expansion and
+  final GUI power-off. No host block device or physical Surface disk was used.
+- UEFI graphical HOME, root/DATA mounts, keyboard/framebuffer changes, guest
+  keyboard/gamepad/touch injection, DHCP/DNS/HTTPS, Bluetooth daemon, rendered
+  browser/JavaScript/Ctrl+W and browser launch/global return passed.
+- All eleven emulator runtime probes, NES input/SRAM reload, Wine Windows
+  command exit, Moonlight binary startup and Tailscale daemon/policy routing
+  passed. Captured stereo PCM was non-silent (peak 2987, 41,635 signal frames).
 
-The display service has ten passing fixtures for mode discovery, confirmed
-persistence, timed rollback, safe fallback and session restart.
+Overall status is PARTIAL: Surface hardware is UNTESTED, interrupted-boot
+recovery and generic reboot are NOT_RUN, enrolled streaming is BLOCKED and
+first-live-boot Tailscale state persistence is NOT_VERIFIED.
 
-Installed SATA run `20261120-223547-test` booted through UEFI with 4 GiB RAM
-and four CPUs, without installer media or a direct kernel boot. Actual GUI
-mode discovery and Apply/Keep at 1280×960 passed, an unconfirmed 45-second
-trial rolled back, and restoration to 1800×1200 passed. The combined
-`display_apply_confirm_timeout_rollback` check is PASS. Display persistence
-was then checked in a separate cold boot below.
+## Detached installed acceptance
 
-All implemented checks in that installed run passed, including Tailscale
-state persistence, application/runtime checks, audio and clean UI shutdown;
-there were no FAIL checks. Overall status remains PARTIAL: hardware is
-UNTESTED, interrupted-boot recovery is NOT_RUN, and enrolled streaming is
-BLOCKED.
+The newly installed SATA disk is being tested without installation media.
+Current-image display Apply/Keep, timed rollback and cold-boot persistence
+results will be recorded here after completion.
 
-## Cold-boot display persistence
+Historical runs `20261120-223547-test` and `20261120-224052-test` passed GUI
+Apply/Keep at 1280×960, 45-second rollback, restoration to 1800×1200 and a
+separate cold boot retaining that mode, DATA boot count and Tailscale state.
+Those results apply to the prior artifact.
 
-`20261120-224052-test` cold-booted the same installed SATA disk through UEFI,
-without installer media or a direct kernel boot. The saved `Virtual-1`
-setting was 1800×1200, the active mode and framebuffer both matched, and no
-trial was pending. DATA boot count advanced from two to three and the
-Tailscale state checksum remained identical. These explicit assertions
-passed; there were no FAIL checks and overall status remained PARTIAL.
+## Source checks and limits
 
-This verifies saved display-mode persistence in the installed VM. The
-harness's generic `reboot` and `interrupted_boot_recovery` checks remain
-NOT_RUN; Surface hardware remains UNTESTED.
+The recorded suite covers 280 Python tests (253 main and 27 application
+fixtures) and seven rebuilt native test executables. Compiled kernel and
+BlueZ configuration gates pass. The kernel includes Surface Go LPSS/I2C/GPIO
+and HID sensor/IIO paths plus broad upstream gamepad drivers; BlueZ includes
+classic HID and LE HOG. SDL mappings include the pinned Ipega entry and the
+custom mapping wizard has native fixture coverage.
 
-Surface touchscreen input is reported nonfunctional. Automatic orientation,
-password-protected accounts and Ipega controller validation remain work.
-Physical graphics, radios, speakers, battery and suspend are not established
-by VM results. No Surface hardware/install pass is claimed.
-
-All 222 Python tests pass; changed native C++ controls/parser checks pass with
-`-Werror`.
+Actual Surface touchscreen operation, accelerometer axes, orientation/touch
+coordinates, controllers, radios, speakers, battery, suspend and installation
+remain unverified. The previously reported touch failure needs a physical
+retest. No universal controller-compatibility or production-release pass is
+claimed. Failed earlier harness runs remain in ignored local artifacts.

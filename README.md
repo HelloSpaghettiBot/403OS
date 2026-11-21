@@ -15,6 +15,9 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
   PPSSPP and Dolphin.
 - Moonlight streaming, Tailscale, a WebKit browser and Wine64/UMU integration.
 - Gamepad, keyboard and touch navigation, with audio, network and display controls.
+- Broad USB/Bluetooth controller drivers, SDL mappings and a custom mapping wizard.
+- Password-protected profiles, a first-run root administrator and separate user app identities.
+- Display resolution trials and sensor-driven rotation of the internal screen.
 - Live USB and an internal-storage installer.
 
 Supply your own games and required BIOS files. Public builds contain no ROMs,
@@ -31,8 +34,8 @@ commercial game artwork, proprietary clients or account credentials.
 
 **Development preview.** VM boot and runtime checks cover the included
 components; they do not establish performance or compatibility on Surface
-hardware. Touchscreen operation, automatic rotation, account setup and broader
-controller support are active work. See [status](docs/STATUS.md),
+hardware. Surface touchscreen, accelerometer and individual controller models
+still require physical testing. See [status](docs/STATUS.md),
 [roadmap](docs/ROADMAP.md) and [test results](docs/VM_TEST_REPORT.md).
 
 Original project code is MIT licensed. Dependencies retain their own licenses;

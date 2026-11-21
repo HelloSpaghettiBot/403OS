@@ -115,14 +115,14 @@ class AcceptanceEvidence(unittest.TestCase):
     def test_browser_cannot_pass_local_rendering_without_successful_tls(self):
         # Mock the guest browser process, not a real HTTPS request or host app.
         # This verifies evidence gating; only the guest run can prove TLS.
-        for outcome in ('missing','failure','success','conflicting'):
+        for outcome in ('missing','failure','success','conflicting','rotation-failure'):
             with self.subTest(outcome=outcome),tempfile.TemporaryDirectory() as temporary:
                 server=SimpleNamespace(server_port=12345,nonce='fixture',serve_forever=lambda:None,
                                        shutdown=lambda:None,server_close=lambda:None)
                 for name in ('page_requested','rendered','tls_success','tls_failure'):
                     setattr(server,name,threading.Event())
                 server.page_requested.set();server.rendered.set()
-                if outcome in ('success','conflicting'):server.tls_success.set()
+                if outcome in ('success','conflicting','rotation-failure'):server.tls_success.set()
                 if outcome in ('failure','conflicting'):server.tls_failure.set()
                 process=SimpleNamespace(returncode=None,poll=lambda:None,wait=lambda timeout:0)
                 clock=[0]
@@ -130,15 +130,21 @@ class AcceptanceEvidence(unittest.TestCase):
                 with patch.object(Path,'is_socket',return_value=True),patch.object(Path,'is_file',return_value=True), \
                      patch.object(check,'PageServer',return_value=server),patch.object(check.subprocess,'Popen',return_value=process), \
                      patch.object(check,'wayland_committed',return_value=True),patch.object(check,'stop_group'), \
+                     patch.object(check,'rotation_runtime_check',return_value={'status':'NOT_RUN'}) as rotation, \
                      patch.object(check.time,'monotonic',side_effect=now),patch.object(check.time,'sleep'), \
                      patch.object(check,'emit') as emitted:
                     if outcome=='success':
                         result=check.browser_check(Path(temporary),0)
                         self.assertEqual(result['tls']['status'],'PASS');self.assertTrue(result['tls']['certificate_validation'])
                         self.assertEqual(emitted.call_args_list[0].args[0],'SURFACE_BROWSER_DISPLAY_READY')
+                    elif outcome=='rotation-failure':
+                        rotation.side_effect=RuntimeError('live rotation was not verified')
+                        with self.assertRaisesRegex(RuntimeError,'live rotation'):check.browser_check(Path(temporary),0)
+                        self.assertEqual(emitted.call_args_list[0].args[0],'SURFACE_ROTATION_RUNTIME_FAIL')
+                        self.assertNotIn('SURFACE_BROWSER_DISPLAY_READY',[call.args[0] for call in emitted.call_args_list])
                     else:
                         with self.assertRaisesRegex(RuntimeError,'HTTPS'):check.browser_check(Path(temporary),0)
-                        emitted.assert_not_called()
+                        emitted.assert_not_called();rotation.assert_not_called()
 
     def test_wayland_evidence_requires_real_surface_commit(self):
         with tempfile.TemporaryDirectory() as temporary:

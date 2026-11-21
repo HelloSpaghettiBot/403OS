@@ -13,6 +13,16 @@ spec.loader.exec_module(vm)
 
 
 class DiskSafetyTests(unittest.TestCase):
+    def test_profile_acceptance_requires_the_real_graphical_protocol(self):
+        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            vm.parse_arguments(['install','--test-profiles'])
+        self.assertTrue(vm.parse_arguments(['live','--test-profiles']).test_profiles)
+        guest=Mock();guest.log.read_text.return_value='SURFACE_READY graphics=wayland\n'
+        summary={'checks':{}}
+        with self.assertRaisesRegex(RuntimeError,'profile UI'):
+            vm.authenticate_profile(guest,summary,required=True)
+        self.assertEqual(summary['checks'],{})
+
     def test_serial_json_waits_for_complete_record(self):
         guest=Mock();guest.process.poll.return_value=None
         guest.log.read_text.side_effect=['SURFACE_DISPLAY_VIEW {"trial_act','SURFACE_DISPLAY_VIEW {"trial_active":true}\n']

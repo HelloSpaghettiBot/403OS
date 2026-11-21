@@ -29,6 +29,14 @@ namespace {
 using Clock = std::chrono::steady_clock;
 namespace fs = std::filesystem;
 std::string readLine(const fs::path& path) { std::ifstream stream(path); std::string value; std::getline(stream,value); return value; }
+std::string jsonQuote(const std::string& value) {
+    std::string result="\"";
+    for(unsigned char c:value) {
+        if(c=='\"' || c=='\\') { result+='\\';result+=static_cast<char>(c); }
+        else if(c>=32 && c!=127) result+=static_cast<char>(c);
+    }
+    return result+'\"';
+}
 std::string clean(std::string text) {
     std::string result; bool escape=false;
     for(unsigned char character:text) {
@@ -252,6 +260,17 @@ std::string storage(const std::string& path) {
 } // namespace
 
 namespace control_detail {
+std::optional<ProfileIdentity> authenticatedProfile(const std::string& output) {
+    if(jsonString(output,"event")!="profile-status" || !jsonBool(output,"authenticated")) return {};
+    if(jsonNumber(output,"uid")>2999 || jsonNumber(output,"gid")>2999) return {};
+    ProfileIdentity next{jsonString(output,"name"),jsonString(output,"home"),jsonString(output,"state"),static_cast<unsigned>(jsonNumber(output,"uid")),static_cast<unsigned>(jsonNumber(output,"gid")),jsonBool(output,"admin")};
+    const bool validName=!next.name.empty() && next.name.size()<=24 && next.name.front()>='a' && next.name.front()<='z' &&
+        std::all_of(next.name.begin(),next.name.end(),[](unsigned char c){return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_' || c=='-';});
+    const auto base="/data/profiles/"+next.name;
+    if(validName && next.uid==next.gid && ((next.name=="root" && next.uid==0 && next.admin && next.home=="/data/home" && next.state=="/data/home") ||
+       (next.name!="root" && next.uid>=2000 && next.uid<=2999 && !next.admin && next.home==base+"/home" && next.state==base+"/state"))) return next;
+    return {};
+}
 struct InstallSource { std::string path,hash; std::uint64_t bytes=0; };
 struct InstallTarget { std::string path,id,model; std::uint64_t bytes=0; };
 std::string installCapacity(std::uint64_t bytes) {
@@ -385,8 +404,8 @@ struct Command {
 using control_detail::Command;
 
 struct ControlCenter::Impl {
-    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle };
-    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert };
+    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle,ProfileName,ProfilePassword,ProfileConfirm,ProfileLogin };
+    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert,ProfileStatus,ProfileEnroll,ProfileLogin,ProfileCreate,ProfileLogout };
     enum class Power { None,Reboot,Suspend };
     struct DisplayMode { std::string output,mode; };
     struct Network { std::string ssid,flags; int signal=0; };
@@ -433,9 +452,43 @@ struct ControlCenter::Impl {
     std::string dw3Source="/library/roms/DW3 Online";
     std::vector<DisplayMode> displayModes;
     DisplayMode displayChoice;
-    bool displayTrial=false,displayReview=false;
+    bool displayTrial=false,displayReview=false,rotationEnabled=true;
+    std::string rotationStatus;
     unsigned displayRemaining=0;
     Clock::time_point displayRefresh{};
+    bool profilesEnabled=false,profileChanged=false,lockRequest=false,profileCreating=false;
+    bool profileEnrolled=false;
+    std::optional<ProfileIdentity> profile;
+    std::vector<std::string> profileNames;
+    std::string profileName,profilePassword;
+    std::optional<std::string> profileNotice;
+
+    bool locked() const { return profilesEnabled && !profile; }
+    bool admin() const { return !profilesEnabled || (profile && profile->admin); }
+    bool profileRequest(Job kind,const std::string& operation,std::string extra={}) {
+        if(!isImage()) { view.status="Profiles are available only inside the booted OS image"; return false; }
+        std::string request="{\"op\":"+jsonQuote(operation)+std::move(extra)+"}\n";
+        const bool result=start(kind,{"/usr/sbin/surface-profiles","--request"},"Checking device profile",30,std::move(request));
+        return result;
+    }
+    void clearProfilePassword() { std::fill(profilePassword.begin(),profilePassword.end(),'\0');profilePassword.clear(); }
+    fs::path profileState(const std::string& filename) const { return fs::path(profile?profile->state:"/data/home")/filename; }
+    void loadProfileState() {
+        host=readLine(profileState("moonlight-host"));if(!validHost(host)) host.clear();
+        librarySource=readLine(profileState("library-source"));if(librarySource.empty() || librarySource.front()!='/') librarySource="/data/roms";
+        authURL.clear();networks.clear();devices.clear();apps.clear();windowsApps.clear();
+        std::fill(password.begin(),password.end(),'\0');password.clear();
+    }
+    void enableProfiles() {
+        profilesEnabled=true;profile.reset();open(PanelKind::Profiles);
+    }
+    void lockProfiles() {
+        if(!profilesEnabled) return;
+        launch.reset();search.reset();std::fill(password.begin(),password.end(),'\0');password.clear();
+        profile.reset();profileChanged=true;clearProfilePassword();open(PanelKind::Profiles);
+        command.cancel();job=Job::None;view.busy=false;
+        profileRequest(Job::ProfileLogout,"logout");
+    }
 
     Impl() {
         keyboard(); host=readLine("/data/home/moonlight-host"); if(!validHost(host)) host.clear();
@@ -449,6 +502,7 @@ struct ControlCenter::Impl {
         }
         if(isImage()) start(Job::DisplayStartup,{"surface-display","--status"},"Reading display configuration");
     }
+    ~Impl() { clearProfilePassword();std::fill(password.begin(),password.end(),'\0'); }
     void keyboard() {
         view.keyboard.clear();
         for(char c='a';c<='z';++c) view.keyboard.emplace_back(1,shift?static_cast<char>(std::toupper(c)):c);
@@ -458,7 +512,9 @@ struct ControlCenter::Impl {
         while(view.keyboard.size()%13) view.keyboard.emplace_back(" ");
         view.keyboard.insert(view.keyboard.end(),{"Done","Delete","Cancel"});
     }
-    bool allowed() {
+    bool allowed(bool requireAdmin=true) {
+        if(locked()) { view.status="Sign in before using HOME"; return false; }
+        if(requireAdmin && !admin()) { view.status="Sign in as root to change system settings"; return false; }
         if(isImage()) return true;
         view.status="Device changes are available only inside the Surface OS image"; return false;
     }
@@ -495,7 +551,19 @@ struct ControlCenter::Impl {
             if(powerConfirm!=Power::None) view.rows={powerConfirm==Power::Reboot?"Confirm restart":"Confirm suspend","Cancel"};
             else if(systemInfo) {
                 view.rows={"Model: "+readLine("/sys/class/dmi/id/product_name"),"Kernel: "+readLine("/proc/sys/kernel/osrelease"),readLine("/proc/meminfo"),storage("/data"),storage("/"),fs::is_regular_file("/data/config/gamecontrollerdb.txt")?"Saved controller mappings: /data/config/gamecontrollerdb.txt":"Controller mappings: SDL defaults; no custom mappings saved","Return to Settings"};
-            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install to internal storage","System and storage information","Restart device","Suspend device","Configure controller buttons","Windows applications","Display resolution"}; break;
+            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install to internal storage","System and storage information","Restart device","Suspend device","Configure controller buttons","Windows applications","Display resolution","User profiles"}; break;
+        case PanelKind::Profiles:
+            view.title=locked()?(profileEnrolled?"Sign in to 403 OS":"Create the root administrator password"):"User profiles";
+            if(!profilesEnabled) view.rows={"Profiles require the booted OS image"};
+            else if(!profileEnrolled) view.rows={"Set a NEW password for root (administrator)","Use 10–128 UTF-8 bytes; keep it somewhere safe"};
+            else if(!profile) {
+                view.rows.clear();for(const auto& name:profileNames) view.rows.push_back("Sign in as "+name);
+                if(view.rows.empty()) view.rows={"Refresh profiles"};
+            } else {
+                view.rows={"Signed in: "+profile->name+" (UID "+std::to_string(profile->uid)+")","Lock / switch user"};
+                if(admin()) view.rows.push_back("Add password-protected user");
+            }
+            break;
         case PanelKind::Display:
             view.title="Display resolution";
             if(displayTrial) view.rows={"Keep this resolution ("+std::to_string(displayRemaining)+" seconds)","Restore previous resolution"};
@@ -504,6 +572,7 @@ struct ControlCenter::Impl {
                 view.rows={"Refresh display modes"};
                 for(const auto& mode:displayModes) view.rows.push_back("Use "+mode.output+" "+(mode.mode=="preferred"?"native / preferred":mode.mode));
                 if(displayModes.empty()) view.rows.emplace_back("No connected display modes detected");
+                view.rows.push_back(std::string("Automatic rotation: ")+(rotationEnabled?"on (select to lock orientation)":"off (select to enable)"));
             }
             break;
         case PanelKind::Network:
@@ -580,9 +649,17 @@ struct ControlCenter::Impl {
     void cancelEdit() { std::fill(view.input.begin(),view.input.end(),'\0'); view.input.clear(); view.editing=false; view.secret=false; edit=Edit::None; }
     void open(PanelKind kind) {
         if(command.running() && job==Job::InstallExecute) { view.status="Installation is active; keep power connected until verification finishes"; return; }
+        if(locked() && kind!=PanelKind::Profiles) return;
+        if(profilesEnabled && profile && !admin() && kind!=PanelKind::Profiles && kind!=PanelKind::Settings && kind!=PanelKind::Library) {
+            view.status="This system service requires the root administrator";opened=true;return;
+        }
         command.cancel(); job=delayed=Job::None; cancelEdit(); panel=kind; opened=true; returnSettings=false;
         view={}; keyboard(); btDetail=false; logoutConfirm=false; systemInfo=false; protonConfirm=false; displayReview=false; powerConfirm=Power::None; interface=wifiInterface(); rows();
-        if(kind==PanelKind::Settings) start(Job::Mixer,{"amixer","scontrols"},"Reading audio controls");
+        if(kind==PanelKind::Profiles) {
+            clearProfilePassword();profileCreating=false;
+            if(profilesEnabled) profileRequest(Job::ProfileStatus,"status");
+        }
+        else if(kind==PanelKind::Settings) start(Job::Mixer,{"amixer","scontrols"},"Reading audio controls");
         else if(kind==PanelKind::Display) {
             if(allowed()) start(Job::DisplayStatus,{"surface-display","--status"},"Reading connected display modes");
         } else if(kind==PanelKind::Network) {
@@ -603,7 +680,7 @@ struct ControlCenter::Impl {
         else view.status="Game sources are read only. Cover downloads occur only after choosing the download action";
     }
     void browser(const std::string& url) {
-        if(!allowed()) return;
+        if(!allowed(false)) return;
         if(!executable("/usr/bin/surface-browser").empty()) launch=std::vector<std::string>{"/usr/bin/surface-browser",url};
         else if(!executable("cog").empty()) launch=std::vector<std::string>{executable("dbus-run-session"),"--",executable("cog"),"--platform=wl",url};
         else { view.status="The WebKit browser is not installed in this image"; return; }
@@ -660,6 +737,17 @@ struct ControlCenter::Impl {
             return;
         }
         switch(panel) {
+        case PanelKind::Profiles:
+            if(!profilesEnabled) break;
+            if(!profileEnrolled) {
+                profileName="root";profileCreating=false;clearProfilePassword();
+                beginEdit(Edit::ProfilePassword,"Create a NEW root password (10–128 UTF-8 bytes)",true);
+            } else if(!profile) {
+                if(choice<profileNames.size()) { profileName=profileNames[choice];beginEdit(Edit::ProfileLogin,"Password for "+profileName,true); }
+                else profileRequest(Job::ProfileStatus,"status");
+            } else if(choice==1) { lockRequest=true;view.status="Closing the active application before locking"; }
+            else if(choice==2 && admin()) { profileCreating=true;clearProfilePassword();beginEdit(Edit::ProfileName,"New lowercase username (1–24 letters/digits/_/-)"); }
+            break;
         case PanelKind::Settings:
             if(powerConfirm!=Power::None) {
                 const auto requested=powerConfirm; powerConfirm=Power::None; view.selected=0; rows();
@@ -672,7 +760,7 @@ struct ControlCenter::Impl {
             else if(choice<5) brightness(choice==3?-1:1);
             else if(choice<9) { const auto next=choice==5?PanelKind::Network:choice==6?PanelKind::Bluetooth:choice==7?PanelKind::Tailscale:PanelKind::Moonlight; open(next); returnSettings=true; }
             else if(choice==9) {
-                auto url=readLine("/data/home/browser-url");
+                auto url=readLine(profileState("browser-url"));
                 if((!url.starts_with("https://") && !url.starts_with("http://")) || url.size()>512) url="https://www.google.com/";
                 beginEdit(Edit::BrowserURL,"Enter an https:// or http:// web address",false,std::move(url));
             }
@@ -685,6 +773,7 @@ struct ControlCenter::Impl {
                 else launch=std::vector<std::string>{program};
             } else if(choice==15) { open(PanelKind::Windows); returnSettings=true; }
             else if(choice==16) { open(PanelKind::Display); returnSettings=true; }
+            else if(choice==17) { open(PanelKind::Profiles); returnSettings=true; }
             break;
         case PanelKind::Display:
             if(displayTrial) mutate(choice==0?Job::DisplayConfirm:Job::DisplayRevert,{"surface-display",choice==0?"--confirm":"--revert"},choice==0?"Saving display resolution":"Restoring previous display resolution");
@@ -697,6 +786,8 @@ struct ControlCenter::Impl {
             } else if(choice-1<displayModes.size()) {
                 displayChoice=displayModes[choice-1]; displayReview=true; view.selected=1; rows();
                 view.status="Applying closes running applications and restarts HOME. Keep the new resolution within 45 seconds, or the previous mode returns automatically";
+            } else if(choice==view.rows.size()-1) {
+                mutate(Job::DisplayConfirm,{"surface-display","--autorotate",rotationEnabled?"off":"on"},"Changing automatic screen rotation");
             }
             break;
         case PanelKind::Network:
@@ -878,6 +969,45 @@ struct ControlCenter::Impl {
     }
     void completed(Job completedJob,int code,std::string output) {
         struct Wipe { std::string& value; ~Wipe() { std::fill(value.begin(),value.end(),'\0'); } } wipe{output};
+        if(completedJob==Job::ProfileStatus || completedJob==Job::ProfileEnroll || completedJob==Job::ProfileLogin || completedJob==Job::ProfileCreate || completedJob==Job::ProfileLogout) {
+            clearProfilePassword();
+            if(code!=0 || jsonString(output,"event")!="profile-status") {
+                view.status=jsonString(output,"message");if(view.status.empty()) view.status="Profile service unavailable; sign-in remains locked";
+                if(completedJob==Job::ProfileLogin || completedJob==Job::ProfileEnroll) profileNotice="SURFACE_PROFILE_AUTH_FAILED";
+                rows();return;
+            }
+            const auto previous=profile;
+            profileEnrolled=jsonBool(output,"enrolled");
+            profileNames.clear();for(const auto& row:jsonObjects(output,"profiles")) { const auto name=jsonString(row,"name");if(!name.empty() && name.size()<=24) profileNames.push_back(name); }
+            profile.reset();
+            if(jsonBool(output,"authenticated")) {
+                if(const auto next=control_detail::authenticatedProfile(output)) profile=*next;
+                else { view.status="The profile service returned an invalid identity; sign-in remains locked";rows();return; }
+            }
+            profileChanged=profileChanged || (!previous && profile) || (previous && !profile) || (previous && profile && previous->name!=profile->name);
+            if(profileChanged && profile) loadProfileState();
+            rows();view.selected=0;
+            if(profile) {
+                if(completedJob==Job::ProfileEnroll || completedJob==Job::ProfileLogin || !previous) {
+                    profileNotice="SURFACE_PROFILE_AUTH_SUCCESS name="+profile->name+" uid="+std::to_string(profile->uid);opened=false;
+                } else {
+                    view.status=completedJob==Job::ProfileCreate?"User created with a private home and password":"Use Lock / switch user to sign in to another profile";
+                    if(completedJob==Job::ProfileCreate) for(const auto& row:jsonObjects(output,"profiles")) {
+                        const auto uid=jsonNumber(row,"uid");
+                        if(jsonString(row,"name")==profileName && uid>=2000 && uid<=2999) profileNotice="SURFACE_PROFILE_CREATED name="+profileName+" uid="+std::to_string(uid);
+                    }
+                }
+            } else if(!profileEnrolled) {
+                profileNotice="SURFACE_PROFILE_SETUP_REQUIRED";profileName="root";profileCreating=false;
+                beginEdit(Edit::ProfilePassword,"Create a NEW root password (10–128 UTF-8 bytes)",true);
+            } else { profileNotice="SURFACE_PROFILE_LOGIN_REQUIRED";view.status="Select your profile, then enter its device password"; }
+            // Profile setup owns the first command slot at startup. Refresh
+            // display state after sign-in so a compositor restart still opens
+            // the active resolution trial and emits its complete inventory.
+            if(profile && admin() && (completedJob==Job::ProfileEnroll || completedJob==Job::ProfileLogin || !previous))
+                start(Job::DisplayStartup,{"surface-display","--status"},"Reading display configuration");
+            return;
+        }
         const bool ok=code==0;
         const bool failed=output.find("FAIL")!=std::string::npos || output.find("Failed")!=std::string::npos;
         const auto diagnostic=completedJob==Job::WpaConfigure?"Private Wi-Fi operation failed (command output suppressed)":brief(output);
@@ -892,6 +1022,7 @@ struct ControlCenter::Impl {
         if(!ok && completedJob==Job::WindowsSetup) { const auto list=lines(output); const auto message=list.empty()?std::string{}:jsonString(list.back(),"message"); view.status="Proton setup stopped: "+(message.empty()?diagnostic:message); return; }
         if(!ok && completedJob!=Job::TailStatus && completedJob!=Job::PokeStatus && completedJob!=Job::DW3Status && completedJob!=Job::MoonDiscover && completedJob!=Job::LibraryVolumes) { view.status=(code==124?"Operation timed out: ":"Operation failed: ")+diagnostic; return; }
         switch(completedJob) {
+        case Job::ProfileStatus: case Job::ProfileEnroll: case Job::ProfileLogin: case Job::ProfileCreate: case Job::ProfileLogout: break;
         case Job::DisplayStartup:
         case Job::DisplayStatus: {
             if(jsonString(output,"event")!="display-status") { if(completedJob==Job::DisplayStatus) view.status="Display service returned an invalid inventory"; break; }
@@ -909,6 +1040,8 @@ struct ControlCenter::Impl {
                 current+=name+" "+jsonString(item,"current");
             }
             displayTrial=jsonBool(output,"trial_active");
+            rotationEnabled=output.find("\"rotation_enabled\"")==std::string::npos || jsonBool(output,"rotation_enabled");
+            rotationStatus=jsonString(output,"rotation_message");
             displayRemaining=static_cast<unsigned>(jsonNumber(output,"remaining_seconds"));
             displayRefresh=Clock::now()+std::chrono::seconds(1);
             if(completedJob==Job::DisplayStartup) { std::printf("SURFACE_DISPLAY_STARTUP %s\n",output.c_str()); std::fflush(stdout); }
@@ -916,6 +1049,7 @@ struct ControlCenter::Impl {
                 panel=PanelKind::Display; opened=true; displayReview=false;
                 view.status="Keep this resolution to save it. The previous mode returns automatically if time runs out";
             } else if(completedJob==Job::DisplayStatus) view.status=current.empty()?"No connected display found":"Current: "+current+" | Choose a mode, then Apply";
+            if(!displayTrial && !rotationStatus.empty()) view.status+=" | "+rotationStatus;
             if(panel==PanelKind::Display) rows();
             if(panel==PanelKind::Display && opened) {
                 std::printf("SURFACE_DISPLAY_VIEW %s\n",output.c_str()); std::fflush(stdout);
@@ -1223,6 +1357,24 @@ struct ControlCenter::Impl {
         if(!view.editing) return;
         const auto purpose=edit; std::string value=view.input; cancelEdit();
         switch(purpose) {
+        case Edit::ProfileName:
+            if(value.empty() || value.size()>24 || value.front()<'a' || value.front()>'z' || value=="root" ||
+               !std::all_of(value.begin(),value.end(),[](unsigned char c){return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_' || c=='-';})) {
+                view.status="Choose a lowercase username of 1–24 letters/digits/_/- other than root";break;
+            }
+            profileName=value;beginEdit(Edit::ProfilePassword,"New device password for "+profileName+" (10–128 UTF-8 bytes)",true);break;
+        case Edit::ProfilePassword:
+            if(value.size()<10 || value.size()>128) { view.status="Use a NEW password of 10–128 UTF-8 bytes";break; }
+            profilePassword=std::move(value);beginEdit(Edit::ProfileConfirm,"Enter the same NEW password again",true);break;
+        case Edit::ProfileConfirm: {
+            if(value!=profilePassword) { clearProfilePassword();view.status="The passwords did not match; choose the password again";break; }
+            std::string extra=",\"password\":"+jsonQuote(profilePassword)+",\"confirm\":"+jsonQuote(value);
+            if(profileCreating) extra+=",\"name\":"+jsonQuote(profileName);
+            profileRequest(profileCreating?Job::ProfileCreate:Job::ProfileEnroll,profileCreating?"create":"enroll-root",std::move(extra));
+            clearProfilePassword();break;
+        }
+        case Edit::ProfileLogin:
+            profileRequest(Job::ProfileLogin,"login",",\"name\":"+jsonQuote(profileName)+",\"password\":"+jsonQuote(value));break;
         case Edit::WifiPassword:
             if(value.empty() || (selectedFlags.find("SAE")==std::string::npos && value.size()<8) || value.size()>64 || (selectedFlags.find("SAE")!=std::string::npos && value.size()>63) ||
                 (value.size()==64 && !std::all_of(value.begin(),value.end(),[](unsigned char c){return std::isxdigit(c);}))) {
@@ -1245,7 +1397,7 @@ struct ControlCenter::Impl {
         }
         case Edit::BrowserURL:
             if(!value.starts_with("https://") && !value.starts_with("http://")) view.status="Use an https:// or http:// URL";
-            else { if(allowed()) writePrivate("/data/home/browser-url",value+'\n'); browser(value); }
+            else { if(allowed(false)) writePrivate(profileState("browser-url"),value+'\n'); browser(value); }
             break;
         case Edit::LibrarySource:
             if(value.empty() || value.front()!='/') { view.status="Use the absolute path to a mounted game folder"; break; }
@@ -1283,11 +1435,11 @@ struct ControlCenter::Impl {
             else if(action==Action::Right) index=(index+1)%count;
             else if(action==Action::Up) index=index>=13?index-13:std::min(count-1,index+((count-1)/13)*13);
             else if(action==Action::Down) index=index+13<count?index+13:index%13;
-            else if(action==Action::Back) { cancelEdit(); view.status="Input cancelled"; }
+            else if(action==Action::Back) { cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
             else if(action==Action::Accept) {
                 const auto key=view.keyboard[index];
                 if(key=="Done") submit();
-                else if(key=="Cancel") { cancelEdit(); view.status="Input cancelled"; }
+                else if(key=="Cancel") { cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
                 else if(key=="Delete") backspace();
                 else if(key=="Shift") { shift=!shift; keyboard(); }
                 else input(key=="Space"?" ":key);
@@ -1308,6 +1460,7 @@ struct ControlCenter::Impl {
             else if(panel==PanelKind::Install && installStage==InstallStage::Review) { installReview.reset(); installStage=InstallStage::Disks; view.selected=0; rows(); view.status="Installation cancelled. No disk was erased"; }
             else if(panel==PanelKind::Install && installPowerConfirm) { installPowerConfirm=false; view.selected=1; rows(); view.status="Power off cancelled. Keep the running USB boot media connected"; }
             else if(btDetail && panel==PanelKind::Bluetooth) { btDetail=false; view.selected=0; rows(); }
+            else if(locked()) { clearProfilePassword();rows();view.status="Sign in to unlock HOME"; }
             else if(returnSettings) open(PanelKind::Settings);
             else opened=false;
         } else if(action==Action::Up || action==Action::Left) { if(!view.rows.empty()) view.selected=(view.selected+view.rows.size()-1)%view.rows.size(); }
@@ -1331,11 +1484,26 @@ ControlCenter::~ControlCenter()=default;
 void ControlCenter::open(PanelKind panel) { impl_->open(panel); }
 bool ControlCenter::active() const { return impl_->opened; }
 void ControlCenter::navigate(Action action) { impl_->navigate(action); }
-void ControlCenter::inputText(std::string text) { impl_->input(text); }
+void ControlCenter::inputText(std::string text) { impl_->input(text);std::fill(text.begin(),text.end(),'\0'); }
 void ControlCenter::backspace() { if(impl_->view.editing) impl_->backspace(); }
 void ControlCenter::submitText() { impl_->submit(); }
 void ControlCenter::update() { impl_->update(); }
 const ControlView& ControlCenter::view() const { return impl_->view; }
 std::optional<std::vector<std::string>> ControlCenter::takeLaunch() { auto result=std::move(impl_->launch); impl_->launch.reset(); return result; }
 std::optional<std::string> ControlCenter::takeSearch() { auto result=std::move(impl_->search); impl_->search.reset(); return result; }
+void ControlCenter::enableProfiles() { impl_->enableProfiles(); }
+bool ControlCenter::profilesLocked() const { return impl_->locked(); }
+bool ControlCenter::administrator() const { return impl_->admin(); }
+std::optional<ProfileIdentity> ControlCenter::currentProfile() const { return impl_->profile; }
+bool ControlCenter::takeProfileChanged() { const auto result=impl_->profileChanged;impl_->profileChanged=false;return result; }
+bool ControlCenter::takeLockRequest() { const auto result=impl_->lockRequest;impl_->lockRequest=false;return result; }
+void ControlCenter::lockProfiles() { impl_->lockProfiles(); }
+std::string ControlCenter::passwordPrompt() const {
+    if(!impl_->view.editing) return {};
+    if(impl_->edit==Impl::Edit::ProfilePassword) return "new";
+    if(impl_->edit==Impl::Edit::ProfileConfirm) return "confirm";
+    if(impl_->edit==Impl::Edit::ProfileLogin) return "login";
+    return {};
+}
+std::optional<std::string> ControlCenter::takeProfileNotice() { auto result=std::move(impl_->profileNotice);impl_->profileNotice.reset();return result; }
 }

@@ -1,47 +1,71 @@
-# Status — November 20, 2026
+# Status — November 21, 2026
 
-403 OS remains a development preview. The current public image compiled with
-click-through installation and persistent display-resolution controls.
+403 OS remains a development preview. The current image compiles with the
+GUI installer, password-protected profiles, expanded controller drivers and
+native output rotation.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `5c374e5e6de71d2f2153611ce7e9336a67b152f2c8575ebb8acb4396ff0c5b99` |
-| Pristine internal-install image | `55caaa5b0f45e6ec56d74c47cc0c78cf189d20e9ad33ffaab5a71c7f1f09f7ba` |
+| Public live USB | `8fbfb8494ae5b66896f76690fd239fcbdc1cb6abe434b1e137a45ccb2b5d91f2` |
+| Pristine internal-install image | `664d6c92e2132c2457696ad626c46c08167c2a4b7366ad1626a69ba95eccb7c1` |
 
-The live image discovers its embedded pristine installer automatically. The
-GUI now provides disk selection, an erase review with Cancel selected by
-default, a single explicit Install action, four progress stages, verified
-completion and power-off. It retains backend hardware identity, full-source
-checksum, exclusive target, complete readback and DATA-expansion checks.
+Both images are 6,510,628,864 logical bytes. Packaging verified the complete
+embedded installation payload and its root-owned read-only metadata.
 
-The `20261120-221932-live` run exercised this actual GUI against a disposable
-64 GiB SATA disk. Copy/readback/DATA growth and clean shutdown passed. All
-implemented live checks passed; overall status is PARTIAL because physical
-hardware, recovery and external streaming services are outside that evidence.
+## Implemented changes
 
-All **222 Python tests** pass in `artifacts/tests/click-installer-python.log`.
-The changed native control-center/parser checks also pass with `-Werror`.
-Eleven emulator runtime probes, NES input/SRAM, browser/HOME return, Wine,
-Tailscale daemon, network and non-silent PCM checks pass in the live VM.
+- The first HOME profile is root (UID zero), enrolled with a new password.
+  Cold boots require login. Root can add users; their applications permanently
+  drop to separate Unix identities with private homes, browser data and saves.
+- The resolved kernel includes Surface Go LPSS/I2C/GPIO touch paths, HID-sensor
+  and IIO accelerometer support, and broad upstream USB/Bluetooth gamepad
+  drivers. BlueZ classic HID and Bluetooth LE HOG plugins are compiled in.
+  SDL mappings and the custom mapping wizard are included. Individual physical
+  controller models still need pairing, reconnect and gameplay tests.
+- A native Weston module rotates the internal output without restarting the
+  compositor or applications. The sensor service applies scale and mount
+  matrices with debounce, reports missing readings and pauses during display
+  resolution trials. The automatic rotation toggle is persistent.
+- The GUI installer discovers the pristine embedded image, reviews the selected
+  disk with Cancel selected by default, then verifies source, copy, complete
+  readback, GPT and fresh DATA expansion before offering power-off.
 
-Settings → Display resolution discovers connected DRM modes. Apply starts a
-45-second trial; Keep persists the choice, and timeout restores the previous
-mode. Ten focused backend fixtures pass. Installed SATA run
-`20261120-223547-test` passed actual GUI mode selection, Apply/Keep at
-1280×960, timeout rollback and restoration to 1800×1200. It booted through
-UEFI without installer media; all implemented checks passed, with overall
-status PARTIAL. A separate cold boot, `20261120-224052-test`, verified the
-saved 1800×1200 mode, matching active mode/framebuffer and no pending trial.
-Display persistence is PASS in this installed VM; Surface display hardware
-remains untested.
+The recorded suite covers **280 Python tests** (253 main and 27 application
+fixtures) and **seven native test executables**. The 19 profile fixtures
+include password hashing, login refusal, identity separation, socket
+permissions and first-boot directory permissions. Compiled kernel and BlueZ
+configuration checks passed.
 
-Reported Surface issues include nonworking touchscreen input and missing
-automatic rotation. Password-protected profiles and Ipega-specific controller
-validation remain pending. VM input tests do not resolve these hardware issues.
-Proton setup, online-game login/gameplay and enrolled streaming remain separate
-acceptance work. No production-readiness or physical-device installation pass
-is claimed.
+## Current artifact validation
 
-Public source and base images contain no game files, credentials or private
-device records. See the [VM report](VM_TEST_REPORT.md),
-[installation guide](INSTALL_RECOVERY.md) and [roadmap](ROADMAP.md).
+Live run `20261121-084511-live` passed every implemented check, including
+root enrollment, a secondary user's browser with all real/effective/saved
+UIDs and GIDs at 2000, global return and switching back to root. Actual browser
+geometry rotated from 1800×1200 to 1200×1800 and back with unchanged browser
+and compositor processes and unchanged resolution settings.
+
+The same run completed GUI installation into a disposable 64 GiB SATA disk,
+including full copy/readback, GPT checks, DATA growth and clean power-off.
+Detached installed-boot and display tests are in progress. Overall status is
+PARTIAL for untested hardware, recovery and enrolled streaming. See the
+[VM report](VM_TEST_REPORT.md).
+
+Historical November 20 VM runs passed GUI installation into a disposable
+64 GiB SATA disk, detached UEFI boot, display Apply/Keep, 45-second rollback
+and cold-boot resolution/DATA/Tailscale persistence. Those results do not
+establish the additions in this image.
+
+## Physical and release limits
+
+The reported Surface touch failure needs a physical retest with the new
+kernel. Accelerometer axes, four orientations, touch coordinates, controllers,
+radios, audio, battery and suspend remain physically unverified. VM controller
+injection does not establish compatibility with every real controller.
+
+Proton setup, online-game login/gameplay and enrolled streaming remain
+separate acceptance work. No production-readiness or physical-device
+installation pass is claimed. Public source and base images contain no game
+files, credentials or private device records.
+
+See [installation](INSTALL_RECOVERY.md), [roadmap](ROADMAP.md) and
+[test results](VM_TEST_REPORT.md).

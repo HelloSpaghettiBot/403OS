@@ -14,8 +14,11 @@ bool Process::start(const std::vector<std::string>& arguments) {
     if (arguments.front().front() != '/' || access(arguments.front().c_str(), X_OK) != 0) {
         error = "Application is not installed: " + arguments.front(); return false;
     }
+    std::vector<std::string> command;
+    if(profiles_) command={"/usr/sbin/surface-profiles","--run","--"};
+    command.insert(command.end(),arguments.begin(),arguments.end());
     std::vector<char*> argv;
-    for (const auto& argument : arguments) argv.push_back(const_cast<char*>(argument.c_str()));
+    for (auto& argument : command) argv.push_back(argument.data());
     argv.push_back(nullptr);
     posix_spawnattr_t attributes;
     posix_spawnattr_init(&attributes);

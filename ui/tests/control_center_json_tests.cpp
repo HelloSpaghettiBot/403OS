@@ -5,6 +5,18 @@
 #include <iostream>
 
 int main() {
+    const std::string rootProfile=R"({"event":"profile-status","authenticated":true,"current":{"name":"root","uid":0,"gid":0,"admin":true,"home":"/data/home","state":"/data/home"}})";
+    const std::string playerProfile=R"({"event":"profile-status","authenticated":true,"current":{"name":"player","uid":2000,"gid":2000,"admin":false,"home":"/data/profiles/player/home","state":"/data/profiles/player/state"}})";
+    const auto rootIdentity=surface::control_detail::authenticatedProfile(rootProfile);
+    assert(rootIdentity && rootIdentity->uid==0 && rootIdentity->admin);
+    const auto playerIdentity=surface::control_detail::authenticatedProfile(playerProfile);
+    assert(playerIdentity && playerIdentity->uid==2000 && !playerIdentity->admin);
+    for(const auto& replacement:std::vector<std::pair<std::string,std::string>>{{"\"uid\":2000","\"uid\":0"},{"\"admin\":false","\"admin\":true"},{"/data/profiles/player/home","/root"},{"\"gid\":2000","\"gid\":0"},{"\"authenticated\":true","\"authenticated\":false"}}) {
+        auto invalid=playerProfile;const auto at=invalid.find(replacement.first);assert(at!=std::string::npos);
+        invalid.replace(at,replacement.first.size(),replacement.second);
+        assert(!surface::control_detail::authenticatedProfile(invalid));
+    }
+    assert(surface::jsonString("{\"value\":"+surface::jsonQuote("literal \\\"; $(no-shell)")+"}","value")=="literal \\\"; $(no-shell)");
     using surface::jsonString;
     assert(jsonString(R"({"path":"/media/Pok\u00e9mon/\ud3ec\ucf13\ubaac/\u96ea.nds"})","path")=="/media/Pokémon/포켓몬/雪.nds");
     assert(jsonString(R"({"path":"/media/\ud83c\udfae.exe"})","path")=="/media/🎮.exe");

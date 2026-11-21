@@ -223,6 +223,8 @@ class VM:
             if self.process.poll() is not None:
                 raise RuntimeError(f"QEMU exited ({self.process.returncode}) before {token}; see {self.directory}")
             time.sleep(0.2)
+        if self.process.poll() is None:
+            self.screenshot('timeout.png')
         raise TimeoutError(f"No {token} within {timeout}s; see {self.directory}")
 
     def qmp(self, command, arguments=None):
@@ -251,6 +253,30 @@ class VM:
     def chord(self, keys):
         self.qmp("send-key", {"keys": [{"type": "qcode", "data": key} for key in keys], "hold-time": 100})
         time.sleep(0.2)
+
+    def fixture_text(self, value):
+        if not re.fullmatch('[a-z0-9]+',value):
+            raise ValueError('Unsupported disposable VM fixture input')
+        for character in value:self.key(character)
+
+    def click_ui(self, x, y):
+        # Convert the real SDL letterboxed logical canvas to USB-tablet pixels.
+        time.sleep(.5)
+        width,height=struct.unpack('>II',self.screenshot('pointer-position.png').read_bytes()[16:24])
+        scale=min(width/1600,height/1066)
+        px=(width-1600*scale)/2+x*scale;py=(height-1066*scale)/2+y*scale
+        if not 0<=px<width or not 0<=py<height:raise ValueError('Pointer outside VM display')
+        tablets=[device for device in self.qmp('query-mice') if device.get('absolute')]
+        if len(tablets)!=1:raise RuntimeError('Expected exactly one absolute VM tablet')
+        self.qmp('human-monitor-command',{'command-line':'mouse_set '+str(tablets[0]['index'])})
+        self.qmp('input-send-event',{'events':[
+            {'type':'abs','data':{'axis':'x','value':round(px*32767/(width-1))}},
+            {'type':'abs','data':{'axis':'y','value':round(py*32767/(height-1))}}]})
+        time.sleep(.3)
+        self.qmp('input-send-event',{'events':[{'type':'btn','data':{'down':True,'button':'left'}}]})
+        time.sleep(.1)
+        self.qmp('input-send-event',{'events':[{'type':'btn','data':{'down':False,'button':'left'}}]})
+        time.sleep(.3)
 
     def screenshot(self, name):
         target = self.directory / name
@@ -314,6 +340,103 @@ def serial_json(vm, prefix, after=0, predicate=None, timeout=15):
     raise TimeoutError('Display UI did not report the requested state')
 
 
+def authenticate_profile(vm, summary, required=False):
+    """Exercise the production enrollment/login UI on disposable VM disks.
+
+    This deliberately synthetic password is used only by the host test driver.
+    The shipped images stay pristine and contain no password or auth bypass.
+    """
+    password='surfacevmfixture2026'
+    startup=vm.log.read_text(errors='replace')
+    if 'SURFACE_PROFILE_PROTOCOL 1' not in startup:
+        if required:raise RuntimeError('This image did not advertise the required profile UI')
+        return
+
+    def offset():return len(vm.log.read_text(errors='replace'))
+    deadline=time.monotonic()+45
+    while True:
+        data=vm.log.read_text(errors='replace')
+        setup='SURFACE_PROFILE_SETUP_REQUIRED' in data
+        login='SURFACE_PROFILE_LOGIN_REQUIRED' in data
+        if setup or login:break
+        if vm.process.poll() is not None:raise RuntimeError('Guest stopped before profile authentication')
+        if time.monotonic()>=deadline:raise TimeoutError('Profile UI did not request authentication')
+        time.sleep(.1)
+    evidence=dict(action='enroll-root' if setup else 'login-root', method='QMP production UI',uid=0)
+    if setup:
+        vm.wait_for('SURFACE_PROFILE_PASSWORD_READY',30)
+        vm.fixture_text(password);position=offset();vm.key('ret')
+        confirm=vm.wait_for('SURFACE_PROFILE_PASSWORD_READY',30,after=position)
+        if 'SURFACE_PROFILE_AUTH_SUCCESS' in confirm[position:]:
+            raise RuntimeError('Root enrolled before confirming its password')
+    else:
+        position=offset();vm.key('ret')
+        vm.wait_for('SURFACE_PROFILE_PASSWORD_READY',30,after=position)
+        if required:
+            vm.fixture_text('wrongvmfixture2026');position=offset();vm.key('ret')
+            failed=vm.wait_for('SURFACE_PROFILE_AUTH_FAILED',30,after=position)
+            if 'SURFACE_PROFILE_AUTH_SUCCESS' in failed[position:]:
+                raise RuntimeError('An incorrect password authenticated the profile')
+            evidence['incorrect_password_refused']='PASS'
+            time.sleep(2);position=offset();vm.key('ret')
+            vm.wait_for('SURFACE_PROFILE_PASSWORD_READY',30,after=position)
+    vm.fixture_text(password);position=offset();vm.key('ret')
+    authenticated=vm.wait_for('SURFACE_PROFILE_AUTH_SUCCESS',45,after=position)
+    if not re.search(r'^SURFACE_PROFILE_AUTH_SUCCESS name=root uid=0(?:\s|$)',authenticated[position:],re.M):
+        raise RuntimeError('Expected an authenticated root profile with UID zero')
+    evidence['password_authentication']='PASS'
+    summary['profile_authentication']=evidence
+    summary['checks']['profile_password_enrollment_or_login']='PASS'
+
+
+def exercise_profiles(vm, summary, create=False):
+    """Create/switch a real Unix profile and launch its browser through HOME."""
+    def offset():return len(vm.log.read_text(errors='replace'))
+    def open_profiles():
+        vm.click_ui(60+6*187+85,904)
+        time.sleep(2);vm.screenshot('profiles-settings.png')
+        vm.key('up');vm.key('ret');time.sleep(3);vm.screenshot('profiles-panel.png')
+    def password(value):
+        vm.wait_for('SURFACE_PROFILE_PASSWORD_READY',30,after=position[0])
+        vm.fixture_text(value);position[0]=offset();vm.key('ret')
+    def signed_in(name,uid):
+        value=vm.wait_for('SURFACE_PROFILE_AUTH_SUCCESS',45,after=position[0])
+        if f'SURFACE_PROFILE_AUTH_SUCCESS name={name} uid={uid}' not in value[position[0]:]:
+            raise RuntimeError('Profile switch authenticated an unexpected Unix identity')
+
+    open_profiles();position=[offset()]
+    if create or summary['profile_authentication']['action']=='enroll-root':
+        vm.key('down');vm.key('down');vm.key('ret')
+        time.sleep(1);vm.screenshot('profile-username.png')
+        vm.fixture_text('vmplayer');position[0]=offset();vm.key('ret')
+        password('secondaryvmfixture2026');password('secondaryvmfixture2026')
+        vm.wait_for('SURFACE_PROFILE_CREATED name=vmplayer uid=2000',45,after=position[0])
+    position[0]=offset();vm.key('down');vm.key('ret')
+    vm.wait_for('SURFACE_PROFILE_LOGIN_REQUIRED',30,after=position[0])
+    vm.screenshot('profiles-login.png')
+    vm.key('down');position[0]=offset();vm.key('ret')
+    password('secondaryvmfixture2026');signed_in('vmplayer',2000)
+    vm.screenshot('profile-secondary-home.png')
+    start=offset();vm.click_ui(60+3*187+85,904)
+    vm.wait_for('SURFACE_APPLICATION_START',20,after=start)
+    application=vm.wait_for('SURFACE_PROFILE_APP_IDENTITY name=vmplayer ',20,after=start)
+    line=next(row for row in application[start:].splitlines() if row.startswith('SURFACE_PROFILE_APP_IDENTITY name=vmplayer '))
+    values=dict(re.findall(r'([a-z_]+)=([a-z0-9_-]+)',line))
+    if any(values.get(key)!='2000' for key in ('real_uid','effective_uid','saved_uid','real_gid','effective_gid','saved_gid')):
+        raise RuntimeError('The secondary application retained privileged Unix IDs')
+    time.sleep(3);vm.screenshot('browser-secondary-profile.png')
+    vm.chord(['ctrl','alt','home'])
+    vm.wait_for('SURFACE_GLOBAL_HOME_REQUEST',10,after=start)
+    vm.wait_for('SURFACE_APPLICATION_RETURN status=0',15,after=start)
+    vm.wait_for('SURFACE_HOME_FOCUS_READY',10,after=start)
+    open_profiles();position[0]=offset();vm.key('down');vm.key('ret')
+    vm.wait_for('SURFACE_PROFILE_LOGIN_REQUIRED',30,after=position[0])
+    position[0]=offset();vm.key('ret');password('surfacevmfixture2026');signed_in('root',0)
+    summary['profile_switching']={'secondary_uid':2000,'secondary_application_uid_gid_drop':'PASS',
+                                  'browser_launch_global_return':'PASS','switch_back_to_root':'PASS'}
+    summary['checks']['profile_switch_and_unprivileged_browser']='PASS'
+
+
 def display_view(vm, after=0, trial=None, timeout=15):
     return serial_json(vm,'SURFACE_DISPLAY_VIEW ',after,
                        None if trial is None else lambda value:value['trial_active'] is trial,timeout)
@@ -326,11 +449,10 @@ def exercise_display(vm, width, height):
         result=struct.unpack('>II',vm.screenshot(name).read_bytes()[16:24])
         return f'{result[0]}x{result[1]}'
     def open_settings():
-        start=offset();vm.key('down')
-        vm.wait_for('zone=1',10,after=start)
-        for _ in range(6):vm.key('right')
-        vm.key('ret');time.sleep(1)
-        vm.key('up');vm.key('ret')
+        start=offset();vm.click_ui(60+6*187+85,904);time.sleep(2)
+        vm.key('up')
+        if 'SURFACE_PROFILE_PROTOCOL 1' in vm.log.read_text(errors='replace'):vm.key('up')
+        vm.key('ret')
         return display_view(vm,start,False)
     def apply(view, chosen):
         modes=[(item['name'],mode) for item in view['outputs'] for mode in item['modes']
@@ -380,9 +502,7 @@ def exercise_display(vm, width, height):
 def exercise_install_ui(vm):
     """Click through the production installer into an explicitly created VM disk."""
     start=len(vm.log.read_text(errors='replace'))
-    vm.key('down')
-    for _ in range(6):vm.key('right')
-    vm.key('ret');time.sleep(1)
+    vm.click_ui(60+6*187+85,904);time.sleep(1)
     for _ in range(10):vm.key('down')
     vm.key('ret')
     listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
@@ -414,6 +534,9 @@ def parse_arguments(argv=None):
     parser.add_argument("--test-proton", action="store_true",
                         help="Explicit installed-VM Proton/runtime download and Windows command probe; requires --disk")
     parser.add_argument("--test-display", action="store_true",help="Exercise installed display mode UI, confirmation and timeout rollback")
+    parser.add_argument('--test-profiles',action='store_true',help='Require actual profile enrollment/login and reject an incorrect login password')
+    parser.add_argument('--create-test-profile',action='store_true',help='Create the synthetic secondary profile on an existing root-only disposable disk')
+    parser.add_argument('--test-rotation',action='store_true',help='Require actual live Weston rotation with preserved browser/compositor processes')
     parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
     parser.add_argument("--cpus", type=int, choices=[2, 4], default=4)
@@ -435,6 +558,12 @@ def parse_arguments(argv=None):
         parser.error("--test-proton requires mode=test and an explicit existing --disk")
     if args.test_display and (args.mode != "test" or args.disk is None):
         parser.error("--test-display requires mode=test and an explicit existing --disk")
+    if args.test_profiles and args.mode=='install':
+        parser.error('--test-profiles requires a live or installed graphical boot')
+    if args.create_test_profile and not args.test_profiles:
+        parser.error('--create-test-profile requires --test-profiles')
+    if args.test_rotation and args.mode=='install':
+        parser.error('--test-rotation requires a live or installed graphical boot')
     if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
         parser.error('--test-install-ui requires a disposable live acceptance run')
     if not 0<=args.expect_library_games<=100000 or args.expect_library_games and args.mode=='install':
@@ -491,6 +620,7 @@ def main():
             summary["browser_close_input"]="QMP Ctrl+W"
             vm.wait_for("SURFACE_APP_CHECK_END",1800 if args.test_proton else 120)
             vm.wait_for("SURFACE_READY graphics=wayland")
+            authenticate_profile(vm,summary,required=args.test_profiles)
             summary['display_configuration']=serial_json(vm,'SURFACE_DISPLAY_STARTUP ',timeout=15)
             vm.wait_for("SURFACE_EFI_PASS")
             summary["checks"]["uefi_graphical_boot"] = "PASS"
@@ -538,6 +668,10 @@ def main():
                 "wine64_windows_command_runtime":"SURFACE_WINE_PASS",
             }.items():
                 summary["checks"][feature]="PASS" if marker in app_log else "FAIL"
+            if 'SURFACE_ROTATION_RUNTIME_PASS' in app_log:
+                summary['checks']['live_rotation_preserves_running_client']='PASS'
+            elif args.test_rotation or 'SURFACE_ROTATION_RUNTIME_FAIL' in app_log:
+                raise RuntimeError('The actual live rotation probe did not pass')
             state_match=re.search(r"SURFACE_TAILSCALE_STATE_SHA256=([a-f0-9]{64})",app_log)
             if not state_match:
                 raise RuntimeError("Tailscale persistent state checksum missing")
@@ -581,6 +715,7 @@ def main():
             if args.test_display:
                 summary['display_settings_test']=exercise_display(vm,args.width,args.height)
                 summary['checks']['display_apply_confirm_timeout_rollback']='PASS'
+            if args.test_profiles:exercise_profiles(vm,summary,create=args.create_test_profile)
             if args.test_install_ui:
                 summary['ui_installed_disk']=exercise_install_ui(vm)
                 summary['checks']['click_installer_copy_readback_data_growth']='PASS'
@@ -598,9 +733,7 @@ def main():
                 print(f"HOME ready for interaction: {directory}", flush=True)
                 vm.process.wait()
             else:
-                vm.key("down")
-                vm.key("left")
-                vm.key("ret")
+                vm.click_ui(60+7*187+85,904)
                 vm.key("ret")
                 vm.process.wait(timeout=45)
                 if vm.process.returncode != 0:

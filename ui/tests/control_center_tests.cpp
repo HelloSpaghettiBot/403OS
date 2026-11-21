@@ -157,6 +157,33 @@ int main() {
         select(center,"Refresh external drives"); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().busy);
+        // Authentication cannot be dismissed into HOME or invoke host services.
+        ControlCenter profiles;
+        profiles.enableProfiles();
+        assert(profiles.active() && profiles.profilesLocked());
+        assert(!profiles.administrator() && !profiles.currentProfile());
+        assert(profiles.view().status.find("only inside")!=std::string::npos);
+        profiles.open(PanelKind::Install);
+        assert(profiles.view().title.find("root administrator")!=std::string::npos);
+        profiles.navigate(Action::Back);
+        assert(profiles.active() && profiles.profilesLocked());
+        profiles.navigate(Action::Accept);
+        assert(profiles.view().editing && profiles.view().secret);
+        assert(profiles.passwordPrompt()=="new");
+        profiles.inputText("disposable-fixture-secret");profiles.submitText();
+        assert(profiles.view().editing && profiles.view().secret);
+        assert(profiles.passwordPrompt()=="confirm");
+        profiles.inputText("different-fixture-secret");profiles.submitText();
+        assert(!profiles.view().editing && profiles.view().input.empty());
+        assert(profiles.profilesLocked() && !profiles.takeLaunch());
+        assert(profiles.view().status.find("did not match")!=std::string::npos);
+        profiles.navigate(Action::Accept);
+        profiles.inputText("disposable-fixture-secret");profiles.submitText();
+        profiles.inputText("disposable-fixture-secret");profiles.submitText();
+        assert(profiles.profilesLocked() && !profiles.currentProfile());
+        assert(profiles.view().status.find("only inside")!=std::string::npos);
+        assert(profiles.view().input.empty());
+        assert(profiles.view().status.find("disposable-fixture-secret")==std::string::npos);
     }
     std::cout<<"ControlCenter input, navigation, search, confirmation, and host-guard tests pass\n";
 }

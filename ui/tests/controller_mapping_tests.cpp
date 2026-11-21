@@ -51,6 +51,23 @@ int main() {
         // This uses SDL's actual mapping machinery without SDL_INIT_VIDEO or a window.
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI,"0");
         CHECK(SDL_Init(SDL_INIT_JOYSTICK|SDL_INIT_GAMEPAD));
+        // This Bluetooth identity and mapping come from the pinned SDL 3.4.20
+        // Linux database, not a guessed VID/PID or a mapping for every Ipega.
+        // https://github.com/libsdl-org/SDL/blob/release-3.4.20/src/joystick/SDL_gamepad_db.h
+        const auto ipega_guid=SDL_StringToGUID("05000000491900000204000000000000");
+        auto* ipega_line=SDL_GetGamepadMappingForGUID(ipega_guid);CHECK(ipega_line);
+        auto ipega=ControllerMapping::parse(ipega_line);SDL_free(ipega_line);CHECK(ipega);
+        CHECK(ipega->name=="Ipega PG-9087S");
+        CHECK(ipega->binding("a")=="b0" && ipega->binding("b")=="b1");
+        CHECK(ipega->binding("leftshoulder")=="b6" && ipega->binding("lefttrigger")=="b8");
+        CHECK(ipega->binding("rightx")=="a2" && ipega->binding("righty")=="a3");
+        ipega->set("a","b2");ipega->set("platform","Linux");
+        save_controller_mapping(database,*ipega);
+        CHECK(SDL_AddGamepadMappingsFromFile(database.c_str())>=1);
+        ipega_line=SDL_GetGamepadMappingForGUID(ipega_guid);CHECK(ipega_line);
+        const auto customized_ipega=ControllerMapping::parse(ipega_line);SDL_free(ipega_line);
+        CHECK(customized_ipega && customized_ipega->binding("a")=="b2");
+        CHECK(customized_ipega->binding("rightx")=="a2" && customized_ipega->binding("righty")=="a3");
         SDL_VirtualJoystickDesc description{};SDL_INIT_INTERFACE(&description);
         description.type=SDL_JOYSTICK_TYPE_UNKNOWN;description.vendor_id=0x1209;description.product_id=0x0403;
         description.naxes=6;description.nbuttons=16;description.nhats=1;description.name="Surface Mapping Test";
@@ -75,6 +92,6 @@ int main() {
         CHECK(!SDL_GetGamepadButton(gamepad,SDL_GAMEPAD_BUTTON_SOUTH));
         SDL_CloseGamepad(gamepad);SDL_CloseJoystick(joystick);CHECK(SDL_DetachVirtualJoystick(id));SDL_Quit();
         fs::remove_all(directory);
-        std::cout<<"PASS controller parsing, skipped-axis preservation, atomic private save, symlink rejection and actual SDL virtual button/hat/axis translation\n";
+        std::cout<<"PASS pinned SDL Ipega mapping and private override, controller parsing, skipped-axis preservation, atomic private save, symlink rejection and actual SDL virtual button/hat/axis translation\n";
     } catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<" SDL="<<SDL_GetError()<<'\n';SDL_Quit();return 1;}
 }

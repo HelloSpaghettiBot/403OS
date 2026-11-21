@@ -137,7 +137,8 @@ class DisplaySettings(unittest.TestCase):
              patch.object(display.subprocess,'run',side_effect=AssertionError('Hardware session must not run VM acceptance')), \
              patch.object(display,'terminate',side_effect=stop),patch.object(Path,'is_socket',return_value=True), \
              patch.object(display.time,'sleep',side_effect=sleep), \
-             patch.object(display.signal,'signal',side_effect=lambda number,handler:signals.__setitem__(number,handler)):
+             patch.object(display.signal,'signal',side_effect=lambda number,handler:signals.__setitem__(number,handler)), \
+             patch.object(display,'Rotation'):
             display.session(self.settings,'pixman')
         weston=[argv for argv,_ in starts if argv[0]=='weston'];self.assertEqual(len(weston),3)
         shells=[kwargs for argv,kwargs in starts if argv[0]=='/usr/bin/surface-shell'];self.assertEqual(len(shells),3)

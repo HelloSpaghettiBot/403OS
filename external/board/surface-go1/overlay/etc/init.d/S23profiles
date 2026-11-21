@@ -1,0 +1,11 @@
+#!/bin/sh
+# Recreate the image's local Unix identities from its private DATA profiles.
+case "$1" in
+start)
+    grep -q ' /data ext4 ' /proc/mounts || exit 1
+    umask 077
+    mkdir -p /data/logs
+    /usr/sbin/surface-profiles --prepare >> /data/logs/profiles.log 2>&1 || exit 1
+    ;;
+esac
+exit 0

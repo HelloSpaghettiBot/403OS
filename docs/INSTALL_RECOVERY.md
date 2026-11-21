@@ -2,7 +2,7 @@
 
 403 OS is a development image. Read [status](STATUS.md) and the
 [VM report](VM_TEST_REPORT.md) before using a build. Current self-contained
-installer/display changes still need complete acceptance; physical Surface
+installer and display flows have disposable VM tests; physical Surface
 installation and recovery remain untested.
 
 ## Image files
@@ -82,8 +82,27 @@ output; Moonlight streaming resolution is a separate profile.
 Save work before Apply: applications close and the compositor/HOME restart.
 The new mode has a 45-second trial. Choose **Keep this resolution** to save it
 for later boots, **Restore previous resolution** to undo it, or wait for the
-timer to restore the previous mode automatically. This flow is being integrated;
-actual Apply/Keep/rollback and physical display validation remain pending.
+timer to restore the previous mode automatically. Apply/Keep and timed rollback
+have passed installed VM tests; physical display validation remains pending.
+
+Automatic rotation is a separate switch in this panel. It uses the internal
+accelerometer and rotates the internal output without restarting applications.
+Rotation pauses during a resolution trial. Missing sensor data is reported;
+it does not establish a working physical sensor.
+
+## Accounts and controllers
+
+On first boot, create and confirm the root administrator password. Passwords
+must contain 10–128 UTF-8 bytes. Settings → **Profiles** lets root add users
+or lock HOME and switch accounts. Other users launch applications under their
+own Unix identities with private home, browser and save directories. Cold
+boots require a new login. The root profile has full administrative privileges.
+
+USB and Bluetooth controller support includes the enabled Linux HID/gamepad
+drivers and SDL's bundled mappings. Pair Bluetooth devices in **Controllers**;
+use the mapping wizard for controllers whose layout is not recognized. Actual
+compatibility depends on the device, firmware and connection mode; individual
+physical models need testing.
 
 ## Install to internal storage
 
@@ -139,6 +158,7 @@ save into a temporary location. Relevant paths include:
 | `/data/apps`, `/data/windows` | Imported clients, runtimes and separate Wine/Proton prefixes |
 | `/data/bluetooth`, `/data/moonlight`, `/data/tailscale` | Pairing keys and persistent network identity |
 | `/data/browser`, `/data/share`, `/data/logs` | Browser data, application state and diagnostics |
+| `/data/profiles` | Password hashes, private per-user homes and HOME state |
 
 Backups may contain credentials, cookies and pairing keys. Store them with
 restricted access, preferably encrypted; exclude them from Git and public

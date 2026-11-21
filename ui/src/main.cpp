@@ -69,6 +69,14 @@ struct Session {
     bool mapping_child=false;
     ControlCenter controls;
     void refresh(Model& model) { progress.apply(library.games);progress.apply(home);progress.apply(model.apps); }
+    void profileChanged(Model& model,const ProfileIdentity& profile) {
+        progress=ProgressStore(std::filesystem::path(profile.state)/"progress.tsv");
+        library=read_library(catalog);home=library.games;
+        home.insert(home.end(),pinned.begin(),pinned.end());
+        model.apps=home;model.tile=0;model.zone=Zone::Carousel;model.page=Page::Home;
+        model.overlay=false;model.details=false;model.shutdown_confirmation=false;model.message.clear();
+        refresh(model);
+    }
     void show(Model& model,Page page,const std::string& system={}) {
         filter_system=system;
         std::vector<App> items;
@@ -115,6 +123,7 @@ struct Session {
 void activate(Model& model, Process& child, Session& session) {
     if(model.shutdown_confirmation) {
         model.shutdown_confirmation=false;
+        if(!session.controls.administrator()) { model.message="Sign in as root to power off the device";return; }
         if(!std::filesystem::exists("/etc/surface-image-id")) {
             model.message="Power controls are available only inside the booted OS image."; return;
         }
@@ -151,9 +160,13 @@ void activate(Model& model, Process& child, Session& session) {
     if(model.selected().executable.empty()) { model.message="No compatible emulator engine is installed for this system."; return; }
     std::vector<std::string> command{model.selected().executable};
     command.insert(command.end(),model.selected().arguments.begin(),model.selected().arguments.end());
+    const auto profile=session.controls.currentProfile();
+    if(profile && profile->uid!=0) {
+        for(std::size_t i=0;i+1<command.size();++i) if(command[i]=="--save-dir") command[i+1]=profile->home+"/saves";
+    }
     if(model.selected().system=="GameCube") {
         const auto preset=model.selected().performance;
-        const std::vector<std::string> options{"--user","/data/config/dolphin","--video_backend","OGL",
+        const std::vector<std::string> options{"--user",profile && profile->uid!=0?profile->home+"/config/dolphin":"/data/config/dolphin","--video_backend","OGL",
             "-C","GFX.Settings.InternalResolution=1","-C","GFX.Settings.MSAA=1",
             "-C",std::string("Dolphin.Core.CPUThread=")+(preset==1?"False":"True"),
             "-C",std::string("GFX.Hacks.EFBAccessEnable=")+(preset==2?"False":"True"),
@@ -218,6 +231,12 @@ int main(int argc, char** argv) {
     try { home=std::make_unique<HomeRenderer>(renderer); }
     catch(const std::exception& error) { std::fprintf(stderr,"HOME: %s\n",error.what()); return 1; }
     Process child;
+    const bool profiles_enabled=!self_test && !capture && std::filesystem::is_regular_file("/etc/surface-image-id");
+    if(profiles_enabled) {
+        std::puts("SURFACE_PROFILE_PROTOCOL 1");std::fflush(stdout);
+        child.useProfiles(true);session.controls.enableProfiles();
+        model.apps=session.pinned;model.tile=0;
+    }
     GlobalHomeInput global_home;
     Status status = read_status();
     std::future<Status> pending;
@@ -241,6 +260,8 @@ int main(int argc, char** argv) {
     bool quit=false;
     bool text_input=false;
     std::string control_snapshot;
+    std::string password_prompt;
+    bool profile_lock_pending=false;
     while(!quit && !session_stop) {
         if(capture && SDL_GetTicks()>1800) {
             draw();
@@ -279,7 +300,8 @@ int main(int argc, char** argv) {
             }
             if(auto a=action(event)) {
                 if(session.controls.active()) {
-                    if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_RETURN && session.controls.view().editing) session.controls.submitText();
+                    if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_SPACE && session.controls.view().editing) { /* SDL text input supplies the space. */ }
+                    else if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_RETURN && session.controls.view().editing) session.controls.submitText();
                     else if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_BACKSPACE && session.controls.view().editing) session.controls.backspace();
                     else session.controls.navigate(*a);
                     redraw=true;continue;
@@ -387,6 +409,16 @@ int main(int argc, char** argv) {
             status=pending.get(); redraw=true;
         }
         session.controls.update();
+        if(session.controls.takeLockRequest()) { profile_lock_pending=true;child.stop();model.overlay=false; }
+        if(profile_lock_pending && !child.running()) {
+            profile_lock_pending=false;session.controls.lockProfiles();
+            SDL_ShowWindow(window);SDL_RaiseWindow(window);redraw=true;
+        }
+        if(session.controls.takeProfileChanged()) {
+            if(const auto profile=session.controls.currentProfile()) session.profileChanged(model,*profile);
+            else { model.apps=session.pinned;model.tile=0;model.overlay=false;model.details=false;model.message.clear(); }
+            redraw=true;
+        }
         if(auto query=session.controls.takeSearch()) {session.query=*query;session.show(model,Page::Search);redraw=true;}
         if(session.controls.active()) {
             const auto& view=session.controls.view();
@@ -407,6 +439,12 @@ int main(int argc, char** argv) {
         if(child.running() && !session.controls.active() && !model.overlay && model.message.empty()) SDL_HideWindow(window);
         redraw=home->update() || redraw;
         if(redraw) { draw(); if(!SDL_RenderPresent(renderer)) return 1; }
+        if(auto notice=session.controls.takeProfileNotice()) { std::puts(notice->c_str());std::fflush(stdout); }
+        const auto prompt=session.controls.passwordPrompt();
+        if(text_input && !prompt.empty() && prompt!=password_prompt) {
+            std::printf("SURFACE_PROFILE_PASSWORD_READY phase=%s\n",prompt.c_str());std::fflush(stdout);
+        }
+        password_prompt=prompt;
         if(home_focus_pending && !child.running() &&
            (SDL_GetWindowFlags(window)&SDL_WINDOW_INPUT_FOCUS)) {
             std::puts("SURFACE_HOME_FOCUS_READY");std::fflush(stdout);
