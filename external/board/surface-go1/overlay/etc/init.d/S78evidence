@@ -17,6 +17,20 @@ start)
         else
             echo 'SURFACE_BLUETOOTH_TRANSPORT_FAIL'
         fi
+        if timeout 8 python3 /usr/libexec/surface/bluetooth-crypto.py; then
+            echo 'SURFACE_BLUETOOTH_CRYPTO_PASS'
+        else
+            echo 'SURFACE_BLUETOOTH_CRYPTO_FAIL'
+        fi
+        # --version bypasses the shared shell and missed BlueZ 5.86's empty
+        # noninteractive output regression. Exercise a real shell command.
+        if python3 - <<'PY'
+import subprocess
+result = subprocess.run(['/usr/bin/bluetoothctl', 'version'], stdin=subprocess.DEVNULL,
+                        capture_output=True, text=True, timeout=4)
+assert result.returncode == 0 and 'Version 5.86' in result.stdout
+PY
+        then echo 'SURFACE_BLUETOOTH_CLIENT_OUTPUT_PASS'; else echo 'SURFACE_BLUETOOTH_CLIENT_OUTPUT_FAIL'; fi
         # QEMU has no physical Bluetooth adapter. Check transport load and the
         # missing-adapter diagnostic independently from hardware functionality.
         timeout 20 /usr/sbin/surface-bluetooth --boot-check

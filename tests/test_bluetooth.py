@@ -31,8 +31,9 @@ class BluetoothRecoveryTests(unittest.TestCase):
         self.logs.mkdir()
         self.firmware = self.base / 'firmware'
         self.firmware.mkdir()
+        self.messages = self.base / 'messages'
         for name, value in (('RFKILL', self.rfkill), ('BLUETOOTH', self.devices),
-                            ('USB', self.usb), ('LOGS', self.logs), ('FIRMWARE', self.firmware)):
+                            ('USB', self.usb), ('LOGS', self.logs), ('FIRMWARE', self.firmware), ('MESSAGES', self.messages)):
             patcher = patch.object(bluetooth, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -90,7 +91,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
 
     def test_enable_requires_actual_power_readback(self):
         self.radio(0, soft='0')
-        run = Mock(side_effect=[(0, ''), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: no')])
         with patch.object(bluetooth, 'run', run):
             with self.assertRaisesRegex(bluetooth.BluetoothError, 'without a powered adapter'):
@@ -99,7 +100,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
 
     def test_enable_checks_output_and_powered_controller(self):
         self.radio(0)
-        run = Mock(side_effect=[(0, ''), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: yes')])
         with patch.object(bluetooth, 'run', run):
             self.assertEqual(bluetooth.power_on(), 'Changing power on succeeded')
@@ -110,6 +111,19 @@ class BluetoothRecoveryTests(unittest.TestCase):
         with patch.object(bluetooth, 'run', run), patch.object(bluetooth.time, 'sleep'):
             self.assertIn('Controller ', bluetooth.wait_adapter())
         self.assertEqual(run.call_count, 3)
+
+    def test_silent_success_is_client_failure_before_any_power_request(self):
+        (self.devices / 'hci0').mkdir()
+        with patch.object(bluetooth, 'run', return_value=(0, '')) as run:
+            with self.assertRaisesRegex(bluetooth.BluetoothError, 'command client'):
+                bluetooth.power_on()
+            self.assertNotIn([bluetooth.CLIENT, 'power', 'on'], [item.args[0] for item in run.call_args_list])
+            self.assertIn('command client', bluetooth.status())
+
+    def test_shell_version_check_does_not_use_bypassing_version_option(self):
+        with patch.object(bluetooth, 'run', return_value=(0, 'Version 5.86')) as run:
+            self.assertEqual(bluetooth.check_client_output(), 'Version 5.86')
+        run.assert_called_once_with([bluetooth.CLIENT, 'version'], 3)
 
     def test_timeout_distinguishes_no_transport_from_hidden_setup_controller(self):
         with patch.object(bluetooth, 'run', return_value=(0, '')):
@@ -132,7 +146,9 @@ class BluetoothRecoveryTests(unittest.TestCase):
         (adapter / 'serial').write_text('MUST-NOT-READ')
         outputs = [(0, 'Controller 00:11:22:33:44:55 fixture'),
                    (0, 'Controller 00:11:22:33:44:55 fixture'),
+                   (0, 'Version 5.86'),
                    (0, 'Bluetooth: hci0: firmware qca/nvm_usb_00000302.bin failed -2\nUnrelated kernel line')]
+        self.messages.write_text('bluetoothd: Failed to open crypto\nOther service: unrelated\n')
         with patch.object(bluetooth, 'run', side_effect=outputs):
             bluetooth.save_diagnostics('bluetooth-boot.json', 'fixture')
         path = self.logs / 'bluetooth-boot.json'
@@ -141,6 +157,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
         self.assertNotIn('00:11:22:33:44:55', text)
         self.assertNotIn('MUST-NOT-READ', text)
         self.assertEqual(record['usb'][0]['product'], 'e302')
+        self.assertEqual(record['daemon_messages'], ['bluetoothd: Failed to open crypto'])
         self.assertEqual(len(record['kernel_messages']), 1)
         self.assertIn('failed -2', record['kernel_messages'][0])
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)

@@ -24,6 +24,7 @@ BLUETOOTH = Path('/sys/class/bluetooth')
 USB = Path('/sys/bus/usb/devices')
 LOGS = Path('/data/logs')
 FIRMWARE = Path('/lib/firmware/qca')
+MESSAGES = Path('/var/log/messages')
 INIT = '/etc/init.d/S40bluetoothd'
 CLIENT = '/usr/bin/bluetoothctl'
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
@@ -108,6 +109,18 @@ def ensure_daemon():
     raise BluetoothError('Bluetooth daemon is unavailable; see the boot log for bluetoothd or D-Bus errors')
 
 
+def check_client_output():
+    """A real shell command catches silent noninteractive client regressions.
+
+    bluetoothctl --version uses a separate path and cannot detect this fault.
+    No adapter needs to be powered or present for the shell version command.
+    """
+    code, output = run([CLIENT, 'version'], 3)
+    if code or not re.search(r'^Version \d+\.\d+', output, re.M):
+        raise BluetoothError('Bluetooth command client returned no usable response; update 403 OS to repair the Bluetooth client')
+    return output
+
+
 def wait_adapter(seconds=8):
     """A successful list command can still precede firmware/HCI registration."""
     deadline = time.monotonic() + seconds
@@ -169,6 +182,23 @@ def diagnostics(reason):
         except (OSError, ValueError) as error:
             result[command] = dict(error=str(error))
     try:
+        code, output = run([CLIENT, 'version'], 2)
+        result['client_version'] = dict(code=code, output=output[-512:])
+    except (OSError, ValueError) as error:
+        result['client_version'] = dict(error=str(error))
+    try:
+        descriptor = os.open(MESSAGES, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise BluetoothError('Bluetooth daemon log is not an ordinary file')
+            stream.seek(max(0, info.st_size - 131072))
+            output = stream.read(131072).decode(errors='replace')
+        result['daemon_messages'] = [line for line in output.splitlines()
+                                    if 'bluetoothd' in line.lower()][-80:]
+    except (OSError, ValueError) as error:
+        result['daemon_messages'] = [str(error)]
+    try:
         code, output = run(['/bin/dmesg', '-s', '131072'], 2)
         lines = [line for line in output.splitlines()
                  if re.search(r'bluetooth|btusb|btintel|btbcm|\bqca|firmware|\bhci[0-9]', line, re.I)]
@@ -209,6 +239,11 @@ def status():
         return 'Bluetooth service is not responding. Choose Scan for controllers to start it'
     if code == 0 and CONTROLLER.search(output):
         return output
+    if code == 0 and not output:
+        try:
+            check_client_output()
+        except BluetoothError as error:
+            return str(error)
     if not any(BLUETOOTH.glob('hci[0-9]*')):
         return 'No Bluetooth adapter is exposed by the kernel. Cold boot after shutdown; check Bluetooth driver and firmware in the boot log'
     return 'Bluetooth hardware was found, but adapter initialization is incomplete. Choose Scan for controllers to retry'
@@ -217,6 +252,7 @@ def status():
 def power_on():
     clear_software_blocks()
     ensure_daemon()
+    check_client_output()
     wait_adapter()
     code, output = run([CLIENT, 'power', 'on'], 5)
     if code or 'Failed' in output or 'succeeded' not in output:

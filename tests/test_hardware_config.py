@@ -49,6 +49,49 @@ class HardwareConfigTests(unittest.TestCase):
         failures = hardware.check(self.values)
         self.assertEqual({item['symbol'] for item in failures}, {'CONFIG_UHID', 'CONFIG_BT_HIDP'})
 
+    def test_aes_algorithms_without_userspace_crypto_api_are_rejected(self):
+        # Regression for the shipped kernel: AES/ECB/CMAC existed, but the
+        # AF_ALG endpoints used by BlueZ were disabled after olddefconfig.
+        for symbol in ('CRYPTO_USER_API', 'CRYPTO_USER_API_HASH', 'CRYPTO_USER_API_SKCIPHER'):
+            self.values['CONFIG_' + symbol] = 'n'
+        failures = hardware.check(self.values)
+        self.assertEqual({item['symbol'] for item in failures}, {
+            'CONFIG_CRYPTO_USER_API', 'CONFIG_CRYPTO_USER_API_HASH', 'CONFIG_CRYPTO_USER_API_SKCIPHER'})
+        self.assertTrue(all(item['group'] == 'bluetooth-crypto' for item in failures))
+
+    def test_bluetooth_crypto_must_be_available_without_module_loading(self):
+        for symbol in ('CRYPTO_USER_API', 'CRYPTO_USER_API_HASH', 'CRYPTO_USER_API_SKCIPHER',
+                       'CRYPTO_AES', 'CRYPTO_ECB', 'CRYPTO_CMAC'):
+            for resolved in ('n', 'm', None):
+                with self.subTest(symbol=symbol, resolved=resolved):
+                    values = dict(self.values)
+                    if resolved is None:
+                        values.pop('CONFIG_' + symbol)
+                    else:
+                        values['CONFIG_' + symbol] = resolved
+                    failures = hardware.check(values)
+                    self.assertEqual(len(failures), 1)
+                    self.assertEqual(failures[0]['group'], 'bluetooth-crypto')
+                    self.assertEqual(failures[0]['symbol'], 'CONFIG_' + symbol)
+                    self.assertEqual(failures[0]['required'], 'y')
+
+    def test_cli_rejects_resolved_kernel_with_disabled_af_alg(self):
+        config = self.root / 'resolved.config'
+        config.write_text(''.join(name + '=' + value + '\n' for name, value in self.values.items()
+                                  if name != 'CONFIG_CRYPTO_USER_API_HASH') +
+                          '# CONFIG_CRYPTO_USER_API_HASH is not set\n')
+        before = config.read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = hardware.main(['--config', str(config)])
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, 1)
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertEqual(report['failures'], [dict(group='bluetooth-crypto',
+            symbol='CONFIG_CRYPTO_USER_API_HASH', resolved='n', required='y')])
+        self.assertFalse(report['physical_validation'])
+        self.assertEqual(config.read_bytes(), before)
+
     def test_unloaded_module_does_not_satisfy_builtin_sensor_requirement(self):
         self.values['CONFIG_HID_SENSOR_ACCEL_3D'] = 'm'
         self.assertEqual(hardware.check(self.values)[0]['resolved'], 'm')

@@ -51,7 +51,18 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [x] Earlier secondary-profile browser launch under UID/GID 2000 and global
   return/switch to the administrator (`20261121-084511-live`).
 
-## Current validation
+## Bluetooth client correction
+
+- [x] Reproduce BlueZ 5.86 empty noninteractive output using the shipped client
+  against a valid isolated adapter; backport both upstream corrections.
+- [x] Verify actual client list/show, power readback, discovery, pairing, trust,
+  connect/disconnect and removal with isolated D-Bus fixtures.
+- [x] Enable and gate AF_ALG hash/cipher interfaces and AES/ECB/CMAC.
+- [x] Current-image UEFI client-output and AES/CMAC known-answer acceptance,
+  with existing-password login and clean shutdown (`20261121-191015-live`).
+- [ ] Physical Surface adapter power, pairing, gameplay, reconnect and resume.
+
+## Previous revision’s boot/update validation
 
 - [x] Updated test-media UEFI USB boot with an older internal SATA installation
   attached; root and DATA both selected from the USB (`20261121-173759-live`).

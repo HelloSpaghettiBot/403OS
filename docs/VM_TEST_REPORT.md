@@ -4,8 +4,8 @@
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `82cd3cdcfcb8024bb0de8d9a40704d163b4a90f8d6a1ba95e90941e9a5479d76` |
-| Pristine installation payload | `1381785b4099e4c2a45935178c4ebf4186be4f29465a6cab1b1e79d0d94d5881` |
+| Public live USB | `dc8b69a3682aa9794c273a8f9c5cb262ac2941f0035fb0dcd4457dc37f86f77f` |
+| Pristine installation payload | `e1e032df9066e075166fe3b9e2c4395a79c0c1f5fe39cdcf84afdccc136aa7b6` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
@@ -14,7 +14,27 @@ filesystem and pristine payload. The exact public outer image has not been
 booted separately. Earlier runs retain their original hashes and apply only
 to their recorded revisions.
 
-## Current live boot and offline update
+## Bluetooth correction acceptance
+
+The actual pre-patch BlueZ 5.86 client returned empty output for list, show and
+power against a valid private D-Bus Adapter1 fixture. All three integration
+tests failed before the backports and passed afterward. Tests cover adapter
+listing, power off/on with readback, discovery, pairing, trust, connection,
+disconnection and removal. They access no host radio.
+
+The kernel now enables AF_ALG hash/cipher APIs plus AES/ECB/CMAC. UEFI run
+`20261121-191015-live` passed actual shell output and both crypto known-answer
+checks, transport/service startup, private diagnostics, existing-profile login,
+library/covers, all eleven emulator runtimes, input/SRAM, browser/global return,
+live rotation, network, non-silent audio and GUI power-off. It used OVMF/KVM,
+4 GiB RAM, four CPUs, 1800×1200 and an older SATA installation attached. Root
+and DATA selected the USB correctly; no direct kernel boot was used.
+Every implemented check passed; overall status is PARTIAL for hardware,
+recovery and enrolled streaming. The exact public outer image was not booted
+separately; this test variant shares its compiled root and pristine payload.
+Physical Surface adapter power, pairing, reconnect and resume remain unverified.
+
+## Previous revision: live boot and offline update
 
 `20261121-173759-live` used QEMU 11.1.3, OVMF/UEFI and KVM, with 4 GiB RAM,
 four virtual CPUs and an 1800×1200 framebuffer. It booted from emulated USB
@@ -52,7 +72,7 @@ receipt is retained in ignored local artifacts. Every implemented guest and
 completed host check passed. Captured stereo PCM was non-silent (peak 2987,
 41,438 signal frames).
 
-## Current updated-system detached boot
+## Previous revision: updated-system detached boot
 
 `20261121-175027-test` booted the updated SATA disk through OVMF/UEFI with
 no installation media and no direct kernel boot. Existing-password login and
@@ -61,7 +81,7 @@ emulator probes, NES input/SRAM, browser, Wine, Moonlight, Tailscale daemon
 persistence, network, live rotation and GUI power-off passed. Stereo audio
 was non-silent (peak 2987, 41,735 signal frames).
 
-This is one detached cold boot of the current updated system. There were no
+This is one detached cold boot of that preceding updated system. There were no
 FAIL checks; overall status is PARTIAL for hardware, recovery and enrolled
 streaming. Additional cold boots and interrupted-update recovery remain
 separate work.
@@ -91,7 +111,15 @@ rollback, restoration to 1800×1200 and a detached cold boot retaining display
 mode, DATA boot count and Tailscale state. These checks have not all been
 repeated on the current revision.
 
-## Source checks
+## Current source checks
+
+`artifacts/tests/bluetooth-correction-suite.log` records 356 passing Python
+tests, including the three actual-client integration tests. The final bounded
+syslog-reader change passed 19 focused Bluetooth tests, and the resolved
+crypto gate passed 17 hardware-configuration tests. The crypto probe refuses
+missing APIs and incorrect known-answer results.
+
+## Earlier source checks
 
 `artifacts/tests/system-update-final.log` records **371 Python tests**
 (344 main and 27 application fixtures) and **five native unit test executables**

@@ -37,6 +37,16 @@ CONFIG_BT_HIDP=y
 CONFIG_UHID=y
 CONFIG_HIDRAW=y
 CONFIG_RFKILL=y
+# BlueZ uses AF_ALG for AES encryption and CMAC, including LE identity keys
+# and signed attributes. Algorithms alone do not expose the user-space API.
+CONFIG_CRYPTO_USER_API=y
+CONFIG_CRYPTO_USER_API_HASH=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+# BlueZ's current AF_ALG client still requests ECB and CMAC explicitly.
+CONFIG_CRYPTO_USER_API_ENABLE_OBSOLETE=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_ECB=y
+CONFIG_CRYPTO_CMAC=y
 CONFIG_MWIFIEX=m
 CONFIG_MWIFIEX_PCIE=m
 CONFIG_BATTERY_SURFACE=m

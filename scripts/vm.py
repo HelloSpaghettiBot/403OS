@@ -864,6 +864,8 @@ def main():
             summary["checks"]["dhcp_dns_https"] = "PASS" if "SURFACE_HTTPS_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_service"] = "PASS" if "SURFACE_BLUETOOTH_SERVICE_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_transport_module"] = "PASS" if "SURFACE_BLUETOOTH_TRANSPORT_PASS" in data else "FAIL"
+            summary["checks"]["bluetooth_client_output"] = "PASS" if "SURFACE_BLUETOOTH_CLIENT_OUTPUT_PASS" in data else "FAIL"
+            summary["checks"]["bluetooth_crypto_known_answers"] = "PASS" if "SURFACE_BLUETOOTH_CRYPTO_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_private_boot_diagnostics"] = "PASS" if "SURFACE_BLUETOOTH_DIAGNOSTICS_PASS" in data else "FAIL"
             app_log=vm.log.read_text(errors="replace")
             record_proton_result(summary,app_log,args.test_proton)

@@ -22,40 +22,43 @@ updated USB from selecting an older installed root or its saved settings.
 Physical adapter detection and controller pairing still require testing on
 the Surface.
 
-## Adapter detection correction
+## Bluetooth client and kernel fixes
 
-The November 21 update changes the USB Bluetooth transport from a built-in
-driver to the `btusb` module. Firmware is stored on the real root filesystem,
-and this image has no firmware-bearing initramfs. Loading the module through
-udev and `S11modules` makes that firmware available before the USB adapter is
-probed. The image build checks the resolved module setting, installed object,
-dependency and USB alias records, startup configuration and Qualcomm firmware.
+BlueZ 5.86 had a noninteractive shell regression: `bluetoothctl list`,
+`show` and power commands could exit successfully without printing their
+results. This made a detected adapter appear stuck during initialization.
+The shipped client reproduced that failure against a valid isolated test
+adapter. The image now includes the upstream
+[output correction](https://github.com/bluez/bluez/commit/b33e923b55e4d0e9d78a83cfcb541fd1f687ef54)
+and its [management-tool follow-up](https://github.com/bluez/bluez/commit/21e13976f2e375d701b8b7032ba5c1b2e56c305f).
+Regression checks use the actual built client for adapter listing, power
+readback, discovery, pairing, trust, connect, disconnect and removal on a
+private D-Bus fixture. They never access the host radio.
 
-This follows the modular transport configuration in the
-[Pop!_OS Ubuntu-based kernel](https://github.com/pop-os/linux/blob/3bf1542e961154e94381c05c778819335218bad5/debian.master/config/annotations).
-The shipped Qualcomm USB 0302 rampatch and NVM files have the same Git blob
-hashes as the corresponding files in
-[Pop!_OS's firmware repository](https://github.com/pop-os/linux-firmware/tree/master/qca).
-The kernel documents why drivers needing early firmware must have that
-firmware [available before filesystem access](https://docs.kernel.org/driver-api/firmware/built-in-fw.html).
+The kernel also includes the user-space AF_ALG hash and cipher interfaces
+required by BlueZ's AES and CMAC operations. Image checks require those
+interfaces and algorithms. VM acceptance executes public AES and CMAC
+known-answer vectors, as well as a real `bluetoothctl version` shell command;
+`bluetoothctl --version` alone would miss the output regression.
 
-For adapters needing a firmware download, the previous built-in transport
-could request it before the root filesystem was mounted. An HCI controller
-left in setup is omitted from BlueZ's adapter list. This correction removes
-that startup risk; no kernel failure log or USB identification was retained
-from the reported Surface boot, so its original physical cause has not been
-confirmed. Some Surface Go USB revisions use firmware already in flash.
+The USB transport remains a `btusb` module loaded after the real root
+filesystem and firmware are available, through udev and `S11modules`.
+Packaging checks module dependencies, USB aliases and the Qualcomm USB 0302
+rampatch/NVM files. Those files match the corresponding
+[Pop!_OS firmware](https://github.com/pop-os/linux-firmware/tree/master/qca).
+USB Bluetooth autosuspend stays disabled by default. Hardware blocks, saved
+bonds and pairing policy are preserved. No speculative device quirk or USB
+reset is applied.
 
-The controller screen now waits for an actual BlueZ adapter before requesting
-power. A successful but empty adapter list does not count as readiness.
-USB Bluetooth autosuspend remains disabled by default. No untested device-ID
-quirk, forced USB reset or relaxed pairing policy is applied.
+The controller screen waits for an actual BlueZ adapter and verifies its
+powered state before scanning. A silent command-client failure is reported
+separately from missing hardware or unfinished initialization.
 
 ## Diagnostic records
 
 Every boot saves `/data/logs/bluetooth-boot.json`. A failed enable request saves
 `/data/logs/bluetooth-last-error.json`. These bounded files contain firmware
-hashes, Bluetooth USB transport details, radio-block state, BlueZ state and
+hashes, Bluetooth USB transport details, radio-block state, client version, BlueZ daemon errors and
 relevant kernel messages. They are root-readable only. Adapter addresses are
 redacted; USB serial numbers, saved bonds and passwords are not collected.
 

@@ -20,6 +20,9 @@ REQUIRED = {
                       'HID_SENSOR_IIO_COMMON', 'HID_SENSOR_IIO_TRIGGER', 'HID_SENSOR_ACCEL_3D'),
     'bluetooth-gamepad': ('BT', 'BT_BREDR', 'BT_LE', 'BT_HIDP', 'FW_LOADER', 'RFKILL',
                           'UHID', 'HID_GENERIC', 'HIDRAW'),
+    # BlueZ's bt_crypto_new binds both ecb(aes) and cmac(aes) via AF_ALG.
+    'bluetooth-crypto': ('CRYPTO_USER_API', 'CRYPTO_USER_API_HASH', 'CRYPTO_USER_API_SKCIPHER', 'CRYPTO_USER_API_ENABLE_OBSOLETE',
+                         'CRYPTO_AES', 'CRYPTO_ECB', 'CRYPTO_CMAC'),
     'console-gamepad': ('NEW_LEDS', 'LEDS_CLASS', 'LEDS_CLASS_MULTICOLOR',
                         'HID_SONY', 'HID_NINTENDO', 'HID_PLAYSTATION'),
     'additional-gamepads': (
