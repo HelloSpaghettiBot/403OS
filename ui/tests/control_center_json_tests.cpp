@@ -5,6 +5,52 @@
 #include <iostream>
 
 int main() {
+    using surface::control_detail::BluetoothDevice;
+    using surface::control_detail::bluetoothDevices;
+    using surface::control_detail::bluetoothInfoName;
+    const std::string btAddress="00:11:22:33:44:66";
+    std::vector<BluetoothDevice> bluetooth;
+    assert(bluetoothDevices(bluetooth,"[NEW] Device "+btAddress+" 00-11-22-33-44-66\n"));
+    assert(bluetooth.size()==1 && bluetooth[0].name.empty());
+    assert(bluetooth[0].label()=="Unnamed Bluetooth device (33:44:66)");
+    assert(!bluetoothDevices(bluetooth,"[CHG] Device "+btAddress+" RSSI: -50\n"));
+    assert(bluetoothDevices(bluetooth,"\x1b[0;93m[CHG]\x1b[0m Device "+btAddress+" Name: ipega PG-9087\n"));
+    assert(bluetooth[0].name=="ipega PG-9087");
+    assert(!bluetoothDevices(bluetooth,"Device "+btAddress+" 00:11:22:33:44:66\n"));
+    assert(bluetooth[0].name=="ipega PG-9087"); // A stale address alias must not erase a resolved name.
+    assert(bluetoothDevices(bluetooth,"[CHG] Device "+btAddress+" Alias: Player controller\n"));
+    assert(bluetooth[0].label()=="Player controller (33:44:66)");
+    assert(bluetoothInfoName("Device "+btAddress+" (public)\n\tName: ipega PG-9087\n\tAlias: 00-11-22-33-44-66\n",btAddress)=="ipega PG-9087");
+    assert(bluetoothInfoName("\tName: Original name\n\tAlias: Custom controller\n",btAddress)=="Custom controller");
+    assert(bluetoothDevices(bluetooth,"Device aa:bb:cc:dd:ee:ff Pokémon controller\n"));
+    assert(bluetooth[1].mac=="AA:BB:CC:DD:EE:FF" && bluetooth[1].name=="Pokémon controller");
+    assert(!bluetoothDevices(bluetooth,"garbage Device 00:11:22:33:44:55 Invalid\n[CHG] Device 00:11:22:33:44:55 Connected: yes\nDevice invalid Unknown\n"));
+    assert(bluetoothDevices(bluetooth,"[DEL] Device "+btAddress+" Player controller\n"));
+    assert(bluetooth.size()==1 && bluetooth[0].name=="Pokémon controller");
+    assert(surface::control_detail::bluetoothName("  <unknown>  ",btAddress).empty());
+    assert(surface::control_detail::bluetoothName(" 00-11-22-33-44-66 ",btAddress).empty());
+    assert(surface::control_detail::bluetoothName(std::string(249,'x'),btAddress).empty());
+    assert(surface::control_detail::bluetoothName(" Game\tpad\x7f ",btAddress)=="Gamepad");
+    std::vector<BluetoothDevice> streaming;
+    std::string pending="[NEW] Device "+btAddress+" 00-11-22-33-44-66\n[CHG] Device "+btAddress+" Name: Partial";
+    assert(surface::control_detail::bluetoothDiscovery(streaming,pending));
+    assert(streaming.size()==1 && streaming[0].name.empty());
+    assert(!surface::control_detail::bluetoothDiscovery(streaming,pending));
+    pending+=" controller\n";
+    assert(surface::control_detail::bluetoothDiscovery(streaming,pending));
+    assert(streaming[0].name=="Partial controller" && pending.empty());
+    assert(!surface::control_detail::bluetoothDiscovery(streaming,pending));
+    const std::string next="[CHG] Device "+btAddress+" Alias: Real controller\n";
+    for(std::size_t index=0;index<next.size();++index) {
+        pending+=next[index];
+        assert(surface::control_detail::bluetoothDiscovery(streaming,pending)==(index+1==next.size()));
+        assert(streaming[0].name==(index+1==next.size()?"Real controller":"Partial controller"));
+    }
+    for(unsigned index=0;index<100;++index) {
+        char device[64]; std::snprintf(device,sizeof(device),"Device AA:BB:CC:DD:00:%02X Controller\n",index);
+        bluetoothDevices(bluetooth,device);
+    }
+    assert(bluetooth.size()==64);
     const std::string rootProfile=R"({"event":"profile-status","authenticated":true,"current":{"name":"root","uid":0,"gid":0,"admin":true,"home":"/data/home","state":"/data/home"}})";
     const std::string playerProfile=R"({"event":"profile-status","authenticated":true,"current":{"name":"player","uid":2000,"gid":2000,"admin":false,"home":"/data/profiles/player/home","state":"/data/profiles/player/state"}})";
     const auto rootIdentity=surface::control_detail::authenticatedProfile(rootProfile);

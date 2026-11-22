@@ -1,17 +1,18 @@
 # Status — November 21, 2026
 
-403 OS is a development preview. The current build corrects BlueZ command
-output and adds the kernel crypto interfaces required by Bluetooth. It retains
+403 OS is a development preview. The current build updates device names as
+discovery resolves them, with BlueZ client corrections and the required kernel
+crypto interfaces retained. It keeps
 separate live-USB boot selection and updates that preserve installed DATA.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `dc8b69a3682aa9794c273a8f9c5cb262ac2941f0035fb0dcd4457dc37f86f77f` |
-| Pristine internal-install image | `e1e032df9066e075166fe3b9e2c4395a79c0c1f5fe39cdcf84afdccc136aa7b6` |
+| Public live USB | `36975c442d05600caa4940e1a75b89a999d8a57f0ed16c8a8834485bb665327f` |
+| Pristine internal-install image | `dc8b04e04450b8d278aa93b7b31e74621ce833788db17b45a4625d94c4830313` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
-embedded installation payload and its root-owned read-only metadata. Current
-VM acceptance uses a local test-media variant with the same compiled root
+embedded installation payload and its root-owned read-only metadata. The last
+completed VM acceptance uses a local test-media variant with the same compiled root
 filesystem and pristine installation payload. The exact public outer image
 has not been booted separately.
 
@@ -19,20 +20,38 @@ has not been booted separately.
 
 The shipped BlueZ 5.86 client reproduced successful but empty adapter, power
 and device-command output against a valid isolated adapter. Upstream fixes
-are now backported. Three actual-client integration tests pass for listing,
-power readback, discovery, pairing, trust, connect, disconnect and removal.
+are now backported. Five actual-client integration tests pass for listing,
+power readback, discovery, pairing, trust, connect, disconnect, removal, delayed
+name resolution and devices without a remote name.
 The helper reports silent client failures separately and saves bounded daemon
 errors alongside transport diagnostics. See [Bluetooth](BLUETOOTH.md).
 
+Discovery now runs for up to 20 seconds and applies arriving Name/Alias changes
+to the visible device list. Friendly unnamed-device labels replace address-only
+names, and selecting a device reads its latest name and alias. Native tests pass
+for partial events, byte-by-byte updates and retention of resolved names when
+a cached address alias is returned. The updated binary completed UEFI live-boot
+acceptance; real-radio name presentation still needs a physical test.
+
+Current-image UEFI run `20261121-194547-live` passed all implemented runtime
+checks, including existing-password login, the 28-game library and covers,
+eleven emulator engines, NES input/SRAM, browser/global return, live rotation,
+networking, non-silent audio and clean GUI shutdown. It selected USB root and
+DATA correctly with an older internal installation attached. Overall status is
+PARTIAL for remaining hardware, recovery and enrolled-streaming acceptance.
+The VM does not provide the Surface radio; name-delivery behavior is covered
+by the native and isolated actual-client tests described above.
+
 AF_ALG hash/cipher APIs and AES/ECB/CMAC are built into the kernel. The new
 runtime gates check real client shell output and public crypto known answers.
-UEFI run `20261121-191015-live` passed client output, AES and CMAC known
+The preceding revision's UEFI run `20261121-191015-live` passed client output, AES and CMAC known
 answers, module/service startup, login, library/covers, all emulator probes,
 rotation, network, audio and GUI power-off. Root and DATA came from the USB
 with an older internal disk attached. Overall status remains PARTIAL; Surface
-pairing and reconnect still require a physical retest.
+pairing, reconnect and resume still require physical testing. The owner now
+reports that device discovery works on the Surface.
 
-The current Python suite passed 356 tests. The final diagnostic-log change
+The preceding full Python suite passed 356 tests. The final diagnostic-log change
 passed 19 Bluetooth tests, and the resolved crypto configuration passed
 17 focused tests. Source and fixture results do not prove physical pairing.
 
@@ -100,12 +119,14 @@ policy remain intact. See [Bluetooth](BLUETOOTH.md).
 The preceding revision’s VM passed module/service startup, private diagnostic permissions,
 existing-profile login, library/covers, all eleven emulator probes, NES
 input/SRAM, browser/global HOME return, rotation, networking, non-silent stereo
-audio and clean power-off. This does not
-establish Bluetooth adapter detection, pairing or reconnect on the Surface.
+audio and clean power-off. VM evidence does not establish physical Bluetooth
+operation. Surface discovery is supported by the owner's report; pairing,
+gameplay, reconnect and resume remain unverified.
 
 Earlier physical logs showed Intel HD 615 initialization and ELAN touch-device
-registration. Those are detection evidence only. The reported touchscreen and
-Bluetooth failures remain unresolved until physical retesting. Accelerometer
+registration. Those are detection evidence only. The reported touchscreen
+failure remains unresolved; the updated Bluetooth name display still requires
+physical testing. Accelerometer
 axes, four orientations, touch coordinates, individual controllers, radios,
 audio, battery and suspend also require hardware acceptance.
 

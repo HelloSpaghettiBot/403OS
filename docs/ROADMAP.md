@@ -57,10 +57,15 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
   against a valid isolated adapter; backport both upstream corrections.
 - [x] Verify actual client list/show, power readback, discovery, pairing, trust,
   connect/disconnect and removal with isolated D-Bus fixtures.
+- [x] Preserve asynchronously resolved device names during discovery, allow a
+  20-second scan and label unnamed devices without duplicating their addresses.
+  Native fixtures cover split events, alias changes and cached-name retention;
+  the shipped client passes delayed-name and missing-name D-Bus fixtures.
 - [x] Enable and gate AF_ALG hash/cipher interfaces and AES/ECB/CMAC.
 - [x] Current-image UEFI client-output and AES/CMAC known-answer acceptance,
-  with existing-password login and clean shutdown (`20261121-191015-live`).
-- [ ] Physical Surface adapter power, pairing, gameplay, reconnect and resume.
+  with existing-password login and clean shutdown (`20261121-194547-live`).
+- [x] Physical Surface device discovery reported working after the client fix.
+- [ ] Physical Surface pairing, gameplay, reconnect, resume and updated name display.
 
 ## Previous revision’s boot/update validation
 
@@ -111,8 +116,8 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [ ] Resolve the reported Surface touch failure and verify four screen
   orientations, touch coordinates and sensor recovery after suspend.
 - [ ] Verify Ipega USB/Bluetooth pairing, mappings, reconnect and real gameplay.
-- [ ] Diagnose the reported physical Bluetooth failure and verify recovery
-  against actual adapter/daemon logs.
+- [ ] Verify physical Bluetooth pairing, reconnect, resume and updated device
+  names after the confirmed discovery recovery.
 - [ ] Legal-game and Moonlight UI launch/return, pairing and streaming.
 - [ ] Authorized Tailscale enrollment and remote streaming.
 - [ ] Explicit Proton setup and online-client launch/login/gameplay.
@@ -124,8 +129,11 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 Touch/controller driver configuration and sensor rotation now have source
 checks and fixture coverage. Ipega-specific behavior remains unverified.
-The reported Surface touchscreen and Bluetooth failures remain unresolved
-until physical testing confirms operation. Earlier Intel HD 615 initialization
+The reported Surface touchscreen failure remains unresolved. The owner reports
+Bluetooth discovery now works on the Surface; physical pairing, gameplay,
+reconnect and resume have not been verified. The device-name display correction
+has native and actual-client fixture coverage and still needs physical testing.
+Earlier Intel HD 615 initialization
 and ELAN registration show detection only. Current VM evidence covers root
 authentication, rotation, correct USB root/DATA selection with an older internal
 disk attached, the offline update UI and one detached updated-system boot.

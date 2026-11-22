@@ -4,17 +4,53 @@
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `dc8b69a3682aa9794c273a8f9c5cb262ac2941f0035fb0dcd4457dc37f86f77f` |
-| Pristine installation payload | `e1e032df9066e075166fe3b9e2c4395a79c0c1f5fe39cdcf84afdccc136aa7b6` |
+| Public live USB | `36975c442d05600caa4940e1a75b89a999d8a57f0ed16c8a8834485bb665327f` |
+| Pristine installation payload | `dc8b04e04450b8d278aa93b7b31e74621ce833788db17b45a4625d94c4830313` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
-Current acceptance uses a local test-media variant with the same compiled root
+The last completed acceptance uses a local test-media variant with the same compiled root
 filesystem and pristine payload. The exact public outer image has not been
 booted separately. Earlier runs retain their original hashes and apply only
 to their recorded revisions.
 
-## Bluetooth correction acceptance
+## Current revision: live boot
+
+UEFI run `20261121-194547-live` booted the updated compiled UI and pristine
+installation payload through OVMF/KVM, with 4 GiB RAM, four CPUs and an
+1800×1200 framebuffer. An older SATA installation was attached; root and DATA
+came from the selected USB. All implemented checks passed: existing-password
+login, the 28-game library and covers, eleven emulator runtime probes, NES
+input/SRAM, real client output and AES/CMAC known answers, browser/global
+return, live rotation, network, non-silent audio and GUI power-off. Overall
+status remains PARTIAL for physical hardware, recovery and enrolled streaming.
+The updater operation was not repeated for this UI-only revision.
+
+The packaged UI binary matches the compiled target binary. The live test uses
+a disposable overlay; its synthetic login fixture leaves source authentication
+unchanged. No physical Bluetooth adapter was passed through to QEMU.
+
+## Bluetooth device-name source checks
+
+Discovery now runs for up to 20 seconds, applies asynchronous Name/Alias events
+to visible rows and retains resolved names when a cached listing contains an
+address alias. Unnamed devices have a friendly fallback label; selecting a
+device reads its latest name and alias. Current native parser tests pass for
+split events, byte-by-byte delivery, alias changes and cached-name retention.
+Native ControlCenter checks also pass.
+
+All five shipped-client integration tests pass against isolated D-Bus fixtures,
+including a name arriving during discovery and an absent optional remote name
+with BlueZ's address alias. These checks access no host radio. The name-display
+binary completed the live-boot checks above. Discovery name updates remain
+covered by native and actual-client fixtures; physical display acceptance
+is still pending.
+
+The owner reports that device discovery now works on the physical Surface.
+This confirms reported discovery recovery; physical pairing, gameplay,
+reconnect, resume and the updated name display remain unverified.
+
+## Preceding revision: Bluetooth correction acceptance
 
 The actual pre-patch BlueZ 5.86 client returned empty output for list, show and
 power against a valid private D-Bus Adapter1 fixture. All three integration
@@ -22,7 +58,7 @@ tests failed before the backports and passed afterward. Tests cover adapter
 listing, power off/on with readback, discovery, pairing, trust, connection,
 disconnection and removal. They access no host radio.
 
-The kernel now enables AF_ALG hash/cipher APIs plus AES/ECB/CMAC. UEFI run
+The kernel enables AF_ALG hash/cipher APIs plus AES/ECB/CMAC. The preceding revision's UEFI run
 `20261121-191015-live` passed actual shell output and both crypto known-answer
 checks, transport/service startup, private diagnostics, existing-profile login,
 library/covers, all eleven emulator runtimes, input/SRAM, browser/global return,
@@ -32,7 +68,8 @@ and DATA selected the USB correctly; no direct kernel boot was used.
 Every implemented check passed; overall status is PARTIAL for hardware,
 recovery and enrolled streaming. The exact public outer image was not booted
 separately; this test variant shares its compiled root and pristine payload.
-Physical Surface adapter power, pairing, reconnect and resume remain unverified.
+This run does not cover the subsequent device-name display changes. Physical
+Surface pairing, gameplay, reconnect and resume remain unverified.
 
 ## Previous revision: live boot and offline update
 
@@ -86,7 +123,7 @@ FAIL checks; overall status is PARTIAL for hardware, recovery and enrolled
 streaming. Additional cold boots and interrupted-update recovery remain
 separate work.
 
-Overall status remains **PARTIAL**. Surface hardware is **UNTESTED**;
+Overall status remains **PARTIAL**. Comprehensive Surface hardware acceptance is pending;
 interrupted-boot and power-loss recovery are **NOT_RUN**. Enrolled streaming is
 **BLOCKED**, and first-live-boot Tailscale persistence is **NOT_VERIFIED**.
 
@@ -113,11 +150,16 @@ repeated on the current revision.
 
 ## Current source checks
 
-`artifacts/tests/bluetooth-correction-suite.log` records 356 passing Python
+`artifacts/tests/bluetooth-correction-suite.log` records the preceding revision's 356 passing Python
 tests, including the three actual-client integration tests. The final bounded
 syslog-reader change passed 19 focused Bluetooth tests, and the resolved
 crypto gate passed 17 hardware-configuration tests. The crypto probe refuses
 missing APIs and incorrect known-answer results.
+
+The current device-name checks pass in
+`artifacts/tests/bluetooth-device-names-native-json.log`,
+`artifacts/tests/bluetooth-device-names-native-controls.log` and
+`artifacts/tests/bluetooth-device-names-bluez-client.log` (five integration tests).
 
 ## Earlier source checks
 
@@ -145,8 +187,10 @@ password preservation. Source fixtures supplement runtime evidence.
 
 Actual Surface touch, accelerometer axes, orientation/touch coordinates,
 controller pairing/reconnect/gameplay, radios, speakers, battery, suspend and
-installation remain unverified. The reported physical touchscreen and
-Bluetooth failures still require retesting. Earlier Intel graphics and ELAN
+installation remain unverified. Surface Bluetooth discovery is now reported
+working by the owner; pairing, gameplay, reconnect, resume and the updated name
+display still need physical tests. The reported touchscreen failure remains
+unresolved. Earlier Intel graphics and ELAN
 registration logs show detection only. No universal controller-compatibility
 or production-release pass is claimed. Failed earlier harness runs remain in
 ignored local artifacts.

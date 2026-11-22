@@ -67,6 +67,8 @@ class BluezClientIntegrationTests(unittest.TestCase):
             'Name': dbus.String('Fixture controller'), 'Alias': dbus.String('Fixture controller'),
             'Adapter': dbus.ObjectPath(ADAPTER_PATH), 'Paired': dbus.Boolean(False),
             'Trusted': dbus.Boolean(False), 'Connected': dbus.Boolean(False)}
+        self.discovery_callback = None
+        fixture = self
         objects = {dbus.ObjectPath(ADAPTER_PATH): {'org.bluez.Adapter1': self.adapter_properties},
                    dbus.ObjectPath(DEVICE_PATH): {'org.bluez.Device1': self.device_properties}}
 
@@ -97,6 +99,8 @@ class BluezClientIntegrationTests(unittest.TestCase):
             @dbus.service.method('org.bluez.Adapter1', in_signature='', out_signature='')
             def StartDiscovery(self):
                 self.properties['Discovering'] = dbus.Boolean(True)
+                if fixture.discovery_callback is not None:
+                    fixture.discovery_callback()
 
             @dbus.service.method('org.bluez.Adapter1', in_signature='', out_signature='')
             def StopDiscovery(self):
@@ -185,6 +189,45 @@ class BluezClientIntegrationTests(unittest.TestCase):
         self.assertFalse(self.device_properties['Connected'])
         self.assertIn('Device has been removed', self.command('remove', ADDRESS))
         self.assertNotIn('Fixture controller', self.command('devices'))
+
+    def test_unnamed_device_exposes_address_alias_without_remote_name(self):
+        # BlueZ's Device1 Alias falls back to a dash-separated address when
+        # the remote device has not supplied its optional Name property.
+        self.device_properties.pop('Name')
+        self.device_properties['Alias'] = dbus.String(ADDRESS.replace(':', '-'))
+        self.assertIn('Device ' + ADDRESS + ' ' + ADDRESS.replace(':', '-'),
+                      self.command('devices'))
+        information = self.command('info', ADDRESS)
+        self.assertNotRegex(information, r'(?m)^\s*Name:')
+        self.assertRegex(information, r'Alias:\s+' + ADDRESS.replace(':', '-'))
+
+    def test_discovery_reports_late_remote_name_and_alias_changes(self):
+        self.device_properties.pop('Name')
+        self.device_properties['Alias'] = dbus.String(ADDRESS.replace(':', '-'))
+        initial = self.command('devices')
+        self.assertIn(ADDRESS.replace(':', '-'), initial)
+        resolved_name = 'iPega Fixture Controller'
+        resolved = threading.Event()
+
+        def resolve_name():
+            changed = {'Name': dbus.String(resolved_name),
+                       'Alias': dbus.String(resolved_name)}
+            self.device_properties.update(changed)
+            self.device.PropertiesChanged('org.bluez.Device1', changed, [])
+            resolved.set()
+            return GLib.SOURCE_REMOVE
+
+        def start_resolution():
+            # Send properties after the real target client has entered
+            # discovery, rather than pre-populating its startup snapshot.
+            GLib.timeout_add(150, resolve_name)
+
+        self.discovery_callback = start_resolution
+        output = self.command('--timeout', '1', 'scan', 'on')
+        self.assertTrue(resolved.is_set(), output)
+        self.assertIn('[CHG] Device ' + ADDRESS + ' Name: ' + resolved_name, output)
+        self.assertIn('[CHG] Device ' + ADDRESS + ' Alias: ' + resolved_name, output)
+        self.assertIn('Device ' + ADDRESS + ' ' + resolved_name, self.command('devices'))
 
 
 if __name__ == '__main__':

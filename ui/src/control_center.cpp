@@ -260,6 +260,68 @@ std::string storage(const std::string& path) {
 } // namespace
 
 namespace control_detail {
+struct BluetoothDevice {
+    std::string mac,name;
+    std::string label() const { return (name.empty()?"Unnamed Bluetooth device":name)+" ("+mac.substr(9)+")"; }
+};
+std::string bluetoothName(std::string name,const std::string& mac) {
+    name=clean(std::move(name));
+    name.erase(std::remove_if(name.begin(),name.end(),[](unsigned char c){return c<32 || c==127;}),name.end());
+    const auto begin=name.find_first_not_of(' ');
+    if(begin==std::string::npos) return {};
+    name=name.substr(begin,name.find_last_not_of(' ')-begin+1);
+    auto address=name;
+    for(auto& c:address) c=c=='-'?':':static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    auto expected=mac;
+    for(auto& c:expected) c=static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if(address==expected || name=="<unknown>" || name.size()>248) return {};
+    return name;
+}
+// bluetoothctl lists Alias, which BlueZ initially substitutes with the address.
+// Discovery resolves Name/Alias asynchronously; retain these updates instead
+// of discarding them when the final cached device list is read.
+bool bluetoothDevices(std::vector<BluetoothDevice>& devices,const std::string& output) {
+    bool changed=false;
+    for(auto line:lines(output)) {
+        bool update=false,removed=false;
+        if(line.starts_with("[NEW] ")) line.erase(0,6);
+        else if(line.starts_with("[CHG] ")) { line.erase(0,6); update=true; }
+        else if(line.starts_with("[DEL] ")) { line.erase(0,6); removed=true; }
+        if(!line.starts_with("Device ") || line.size()<24 || (line.size()>24 && line[24]!=' ')) continue;
+        auto mac=line.substr(7,17); if(!validMac(mac)) continue;
+        for(auto& c:mac) c=static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        auto name=line.size()>25?line.substr(25):std::string{};
+        if(update) {
+            if(name.starts_with("Name: ")) name.erase(0,6);
+            else if(name.starts_with("Alias: ")) name.erase(0,7);
+            else continue; // RSSI, UUIDs and connection state are not names.
+        }
+        auto found=std::find_if(devices.begin(),devices.end(),[&](const BluetoothDevice& device){return device.mac==mac;});
+        if(removed) { if(found!=devices.end()) { devices.erase(found);changed=true; } continue; }
+        name=bluetoothName(std::move(name),mac);
+        if(found==devices.end()) {
+            if(devices.size()<64) { devices.push_back({mac,name});changed=true; }
+        } else if(!name.empty() && name!=found->name) { found->name=std::move(name);changed=true; }
+    }
+    return changed;
+}
+bool bluetoothDiscovery(std::vector<BluetoothDevice>& devices,std::string& pending) {
+    const auto end=pending.find_last_of('\n');
+    if(end==std::string::npos) return false;
+    const auto changed=bluetoothDevices(devices,pending.substr(0,end+1));
+    pending.erase(0,end+1);
+    return changed;
+}
+std::string bluetoothInfoName(const std::string& output,const std::string& mac) {
+    std::string name,alias;
+    for(auto line:lines(output)) {
+        const auto first=line.find_first_not_of(" \t"); if(first==std::string::npos) continue;
+        line.erase(0,first);
+        if(line.starts_with("Name: ")) name=bluetoothName(line.substr(6),mac);
+        else if(line.starts_with("Alias: ")) alias=bluetoothName(line.substr(7),mac);
+    }
+    return alias.empty()?name:alias;
+}
 std::optional<ProfileIdentity> authenticatedProfile(const std::string& output) {
     if(jsonString(output,"event")!="profile-status" || !jsonBool(output,"authenticated")) return {};
     if(jsonNumber(output,"uid")>2999 || jsonNumber(output,"gid")>2999) return {};
@@ -484,7 +546,7 @@ struct ControlCenter::Impl {
     enum class Power { None,Reboot,Suspend };
     struct DisplayMode { std::string output,mode; };
     struct Network { std::string ssid,flags; int signal=0; };
-    struct Device { std::string mac,name; };
+    using Device=control_detail::BluetoothDevice;
     using InstallSource=control_detail::InstallSource;
     using InstallTarget=control_detail::InstallTarget;
     struct PokeRom { std::string path,title,code; std::uint64_t bytes=0; };
@@ -683,7 +745,7 @@ struct ControlCenter::Impl {
         case PanelKind::Bluetooth:
             view.title=btDetail?btName:"Bluetooth controllers";
             if(btDetail) view.rows={"Pair, trust and connect","Connect","Disconnect","Forget device","Back to controllers"};
-            else { view.rows={"Scan for controllers","Refresh known devices"}; for(const auto& device:devices) view.rows.push_back(device.name+"  "+device.mac); if(!adapter) view.rows.emplace_back("No Bluetooth adapter detected"); }
+            else { view.rows={"Scan for controllers","Refresh known devices"}; for(const auto& device:devices) view.rows.push_back(device.label()); if(!adapter) view.rows.emplace_back("No Bluetooth adapter detected"); }
             break;
         case PanelKind::Tailscale:
             view.title="Tailscale";
@@ -910,7 +972,7 @@ struct ControlCenter::Impl {
             if(!btDetail) {
                 if(choice==0) mutate(Job::BtPower,{"/usr/sbin/surface-bluetooth","--power-on"},"Starting Bluetooth and enabling its radio",45);
                 else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
-                else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].name; btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
+                else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].label(); btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
             } else if(validMac(btMac)) {
                 if(choice==0) mutate(Job::BtPair,{"bluetoothctl","--agent","NoInputNoOutput","--timeout","35","pair",btMac},"Pairing controller; keep it in pairing mode",40);
                 else if(choice==1) mutate(Job::BtConnect,{"bluetoothctl","connect",btMac},"Connecting controller",25);
@@ -1245,22 +1307,31 @@ struct ControlCenter::Impl {
         case Job::BtPower:
             if(failed) { view.status=diagnostic; break; }
             adapter=true; rows();
-            mutate(Job::BtScan,{"bluetoothctl","--timeout","8","scan","on"},"Scanning: put the controller into pairing mode",12); break;
-        case Job::BtScan: start(Job::BtDevices,{"bluetoothctl","devices"},"Reading discovered controllers"); break;
-        case Job::BtDevices:
-            devices.clear();
-            for(const auto& line:lines(output)) {
-                const auto position=line.find("Device "); if(position==std::string::npos || line.size()<position+24) continue;
-                const auto mac=line.substr(position+7,17); if(!validMac(mac)) continue;
-                const auto name=line.size()>position+25?line.substr(position+25):mac;
-                if(std::none_of(devices.begin(),devices.end(),[&](const Device& device){return device.mac==mac;})) devices.push_back({mac,name});
-                if(devices.size()>=64) break;
+            mutate(Job::BtScan,{"bluetoothctl","--timeout","20","scan","on"},"Scanning for 20 seconds; keep your controller in pairing mode while names appear",25); break;
+        case Job::BtScan:
+            control_detail::bluetoothDevices(devices,output); rows();
+            start(Job::BtDevices,{"bluetoothctl","devices"},"Reading discovered controllers"); break;
+        case Job::BtDevices: {
+            std::vector<Device> current;
+            control_detail::bluetoothDevices(current,output);
+            for(auto& device:current) if(device.name.empty()) {
+                const auto previous=std::find_if(devices.begin(),devices.end(),[&](const Device& known){return known.mac==device.mac;});
+                if(previous!=devices.end()) device.name=previous->name;
             }
-            rows(); view.status=devices.empty()?"No controllers found; activate the controller's pairing mode and scan again":"Select a controller to inspect, pair or connect"; break;
+            if(!failed) devices=std::move(current);
+            std::stable_sort(devices.begin(),devices.end(),[](const Device& a,const Device& b){return !a.name.empty() && b.name.empty();});
+            rows(); view.status=failed?"Could not refresh devices: "+diagnostic:devices.empty()?"No controllers found; activate the controller's pairing mode and scan again":"Select a device to pair or connect. Unnamed devices have not supplied a name; keep your controller in pairing mode and scan again"; break;
+        }
         case Job::BtInfo: {
+            const auto name=control_detail::bluetoothInfoName(output,btMac);
+            if(!name.empty()) {
+                btName=Device{btMac,name}.label();
+                for(auto& device:devices) if(device.mac==btMac) device.name=name;
+                rows();
+            }
             std::string information;
             for(const auto& line:lines(output)) if(line.find("Paired:")!=std::string::npos || line.find("Trusted:")!=std::string::npos || line.find("Connected:")!=std::string::npos) information+=line+" ";
-            view.status=information.empty()?diagnostic:information; break;
+            view.status="Address: "+btMac+" | "+(information.empty()?diagnostic:information); break;
         }
         case Job::BtPair:
             if(output.find("Pairing successful")==std::string::npos && output.find("AlreadyExists")==std::string::npos) { view.status="Pairing did not complete: "+diagnostic; break; }
@@ -1462,6 +1533,9 @@ struct ControlCenter::Impl {
             if(job==Job::InstallExecute || job==Job::UpdateExecute) {
                 installStep=job==Job::UpdateExecute?control_detail::updateProgress(command.text):control_detail::installProgress(command.text); rows();
                 view.status=installStep+". Keep the USB and power connected until verification finishes";
+            } else if(job==Job::BtScan) {
+                // Only parse complete events; a pipe read can split a name.
+                if(control_detail::bluetoothDiscovery(devices,command.text)) rows();
             } else if(job==Job::WindowsSetup) {
                 const auto list=lines(command.text); if(!list.empty()) { const auto message=jsonString(list.back(),"message"); if(!message.empty()) view.status=message; }
             } else if(job==Job::PokeInstall || job==Job::LibraryScan || job==Job::DW3Import || job==Job::PokeImport) {
