@@ -187,6 +187,19 @@ class BluetoothRecoveryTests(unittest.TestCase):
                     self.assertEqual(bluetooth.main(['--power-on']), 1)
                 power.assert_not_called()
 
+    def test_pairing_error_record_is_guarded_bounded_and_redacts_address(self):
+        with patch.object(bluetooth, 'guard'), patch.object(bluetooth, 'save_diagnostics') as save:
+            self.assertEqual(bluetooth.main(['--record-error', 'Pair failed 00:11:22:33:44:55\n' + 'x' * 300]), 0)
+            filename, reason = save.call_args.args
+            self.assertEqual(filename, 'bluetooth-last-error.json')
+            self.assertNotIn('00:11', reason)
+            self.assertNotIn('\n', reason)
+            self.assertLessEqual(len(reason), 256)
+        with patch.object(bluetooth, 'guard', side_effect=bluetooth.BluetoothError('not the guest')):
+            with patch.object(bluetooth, 'save_diagnostics') as save, redirect_stdout(io.StringIO()):
+                self.assertEqual(bluetooth.main(['--record-error', 'Pair failed']), 1)
+                save.assert_not_called()
+
     def test_actual_host_entrypoint_refuses_before_radio_access(self):
         if Path('/etc/surface-image-id').exists():
             self.skipTest('inside the intended guest')

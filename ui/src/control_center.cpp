@@ -322,6 +322,19 @@ std::string bluetoothInfoName(const std::string& output,const std::string& mac) 
     }
     return alias.empty()?name:alias;
 }
+struct BluetoothPrompt { std::string id,kind,message; };
+std::optional<BluetoothPrompt> bluetoothPrompt(const std::string& record) {
+    BluetoothPrompt result{jsonString(record,"id"),jsonString(record,"kind"),jsonString(record,"message")};
+    if(jsonString(record,"event")!="prompt" || result.id.empty() || result.id.size()>64 ||
+       !std::all_of(result.id.begin(),result.id.end(),[](unsigned char c){return std::isalnum(c) || c=='-' || c=='_';}) ||
+       result.message.empty() || result.message.size()>512 ||
+       (result.kind!="pin" && result.kind!="passkey" && result.kind!="confirm")) return {};
+    return result;
+}
+bool bluetoothCompleted(const std::string& record,bool pairing) {
+    return jsonString(record,"event")=="complete" && jsonString(record,"status")=="PASS" &&
+        jsonBool(record,"connected") && (!pairing || (jsonBool(record,"paired") && jsonBool(record,"trusted")));
+}
 std::optional<ProfileIdentity> authenticatedProfile(const std::string& output) {
     if(jsonString(output,"event")!="profile-status" || !jsonBool(output,"authenticated")) return {};
     if(jsonNumber(output,"uid")>2999 || jsonNumber(output,"gid")>2999) return {};
@@ -461,6 +474,7 @@ std::string installProgress(const std::string& text) {
 // arguments and Wi-Fi credentials are never printed or written into UI logs.
 struct Command {
     pid_t pid=-1; int output=-1,input=-1; std::string text,pending;
+    bool keepInput=false;
     struct Retired { pid_t pid; Clock::time_point killAfter; };
     std::vector<Retired> retired;
     Clock::time_point deadline{}; bool timedOut=false;
@@ -487,9 +501,9 @@ struct Command {
         std::fill(text.begin(),text.end(),'\0'); text.clear();
     }
     ~Command() { cancel(); }
-    bool start(std::vector<std::string> args,int timeout,std::string data,std::string& error) {
+    bool start(std::vector<std::string> args,int timeout,std::string data,std::string& error,bool interactive=false) {
         if(running()) { error="A device operation is already running"; return false; }
-        text.clear(); timedOut=false;
+        text.clear(); timedOut=false; keepInput=interactive;
         if(args.empty()) return false;
         const auto path=executable(args[0]); if(path.empty()) { error=args[0]+" is not installed in this image"; return false; }
         args[0]=path;
@@ -510,18 +524,18 @@ struct Command {
         if(result) { ::close(out[0]); ::close(in[1]); pid=-1; error=std::strerror(result); return false; }
         output=out[0]; input=in[1]; fcntl(output,F_SETFL,O_NONBLOCK); fcntl(input,F_SETFL,O_NONBLOCK);
         pending=std::move(data); deadline=Clock::now()+std::chrono::seconds(timeout);
-        if(pending.empty()) { ::close(input); input=-1; }
+        if(pending.empty() && !keepInput) { ::close(input); input=-1; }
         return true;
     }
     std::optional<int> update() {
         reap();
         if(!running()) return std::nullopt;
-        if(input>=0) {
+        if(input>=0 && (!pending.empty() || !keepInput)) {
             // All command input is shorter than PIPE_BUF. Poll before writing,
             // and never expose sensitive input in diagnostic command strings.
             const auto count=::send(input,pending.data(),pending.size(),MSG_NOSIGNAL);
             if(count>0) { std::fill(pending.begin(),pending.begin()+count,'\0'); pending.erase(0,static_cast<std::size_t>(count)); }
-            if(pending.empty() || (count<0 && errno!=EAGAIN && errno!=EINTR)) { ::close(input); input=-1; }
+            if((pending.empty() && !keepInput) || (count<0 && errno!=EAGAIN && errno!=EINTR)) { ::close(input); input=-1; }
         }
         std::array<char,2048> buffer{}; ssize_t count=0;
         for(unsigned reads=0;reads<16 && (count=::read(output,buffer.data(),buffer.size()))>0;++reads) {
@@ -536,12 +550,16 @@ struct Command {
         if(timedOut) return 124;
         return result<0?127:(WIFEXITED(state)?WEXITSTATUS(state):128+WTERMSIG(state));
     }
+    bool sendInput(const std::string& value) {
+        if(!running() || input<0 || !keepInput || pending.size()+value.size()>4096) return false;
+        pending+=value;return true;
+    }
 };
 } // namespace control_detail
 using control_detail::Command;
 
 struct ControlCenter::Impl {
-    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle,ProfileName,ProfilePassword,ProfileConfirm,ProfileLogin };
+    enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle,ProfileName,ProfilePassword,ProfileConfirm,ProfileLogin,BluetoothPin,BluetoothPasskey };
     enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,UpdateList,UpdatePlan,UpdateExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert,ProfileStatus,ProfileEnroll,ProfileLogin,ProfileCreate,ProfileLogout };
     enum class Power { None,Reboot,Suspend };
     struct DisplayMode { std::string output,mode; };
@@ -560,6 +578,8 @@ struct ControlCenter::Impl {
     Command command; Clock::time_point wake{};
     std::string interface,ssid,networkId,password,selectedSSID,selectedFlags;
     std::string mixer="Master",host,authURL,btMac,btName;
+    std::string btPromptId,btPromptKind,btError;
+    bool btConfirm=false,btComplete=false;
     unsigned moonWidth=1280,moonHeight=720,moonFps=60,moonBitrate=0;
     std::vector<Network> networks; std::vector<Device> devices;
     std::vector<std::string> apps;
@@ -678,14 +698,41 @@ struct ControlCenter::Impl {
         if(isImage()) return true;
         view.status="Device changes are available only inside the Surface OS image"; return false;
     }
-    bool start(Job kind,std::vector<std::string> args,const std::string& message,int seconds=15,std::string input={}) {
+    bool start(Job kind,std::vector<std::string> args,const std::string& message,int seconds=15,std::string input={},bool interactive=false) {
         if(command.running()) { view.status="An operation is still running; Back cancels it"; return false; }
         std::string error;
-        if(!command.start(std::move(args),seconds,std::move(input),error)) { view.status=error; view.busy=false; return false; }
+        if(!command.start(std::move(args),seconds,std::move(input),error,interactive)) { view.status=error; view.busy=false; return false; }
         job=kind; view.busy=true; view.status=message; return true;
     }
     bool mutate(Job kind,std::vector<std::string> args,const std::string& message,int seconds=15,std::string input={}) {
         return allowed() && start(kind,std::move(args),message,seconds,std::move(input));
+    }
+    void pairBluetooth(bool pairing) {
+        if(!allowed()) return;
+        btPromptId.clear();btPromptKind.clear();btError.clear();btConfirm=btComplete=false;
+        start(pairing?Job::BtPair:Job::BtConnect,{"surface-bluetooth-pair",pairing?"--pair":"--connect",btMac},
+            pairing?"Preparing controller authentication; keep it in pairing mode":"Connecting controller",180,{},true);
+    }
+    void answerBluetooth(const std::string& value) {
+        if(btPromptId.empty() || (job!=Job::BtPair && job!=Job::BtConnect)) return;
+        const auto response="{\"id\":"+jsonQuote(btPromptId)+",\"value\":"+jsonQuote(value)+"}\n";
+        if(!command.sendInput(response)) { command.cancel();job=Job::None;btError="The pairing agent stopped before receiving your answer"; }
+        btPromptId.clear();btPromptKind.clear();btConfirm=false;cancelEdit();rows();
+        view.status=btError.empty()?"Waiting for the controller to finish authentication":btError;
+    }
+    void bluetoothEvents() {
+        const auto end=command.text.find_last_of('\n'); if(end==std::string::npos) return;
+        for(const auto& record:lines(command.text.substr(0,end+1))) {
+            const auto event=jsonString(record,"event"),message=jsonString(record,"message");
+            if(event=="error") { btError=message;view.status=message; }
+            else if(event=="complete") btComplete=control_detail::bluetoothCompleted(record,job==Job::BtPair);
+            else if(const auto prompt=control_detail::bluetoothPrompt(record); prompt && prompt->id!=btPromptId) {
+                btPromptId=prompt->id;btPromptKind=prompt->kind;
+                if(prompt->kind=="confirm") { btConfirm=true;view.selected=1;rows();view.status=prompt->message; }
+                else beginEdit(prompt->kind=="pin"?Edit::BluetoothPin:Edit::BluetoothPasskey,prompt->message,true);
+            } else if((event=="phase" || event=="message") && btPromptId.empty() && !message.empty()) view.status=message;
+        }
+        command.text.erase(0,end+1);
     }
     std::vector<std::string> wpa(std::initializer_list<std::string> arguments) const {
         std::vector<std::string> result{"wpa_cli","-i",interface}; result.insert(result.end(),arguments); return result;
@@ -744,7 +791,8 @@ struct ControlCenter::Impl {
             break;
         case PanelKind::Bluetooth:
             view.title=btDetail?btName:"Bluetooth controllers";
-            if(btDetail) view.rows={"Pair, trust and connect","Connect","Disconnect","Forget device","Back to controllers"};
+            if(btConfirm) view.rows={"Confirm pairing request","Reject pairing request"};
+            else if(btDetail) view.rows={"Pair, trust and connect","Connect","Disconnect","Forget device","Back to controllers"};
             else { view.rows={"Scan for controllers","Refresh known devices"}; for(const auto& device:devices) view.rows.push_back(device.label()); if(!adapter) view.rows.emplace_back("No Bluetooth adapter detected"); }
             break;
         case PanelKind::Tailscale:
@@ -819,7 +867,7 @@ struct ControlCenter::Impl {
             view.status="This system service requires the root administrator";opened=true;return;
         }
         command.cancel(); job=delayed=Job::None; cancelEdit(); panel=kind; opened=true; returnSettings=false;
-        view={}; keyboard(); btDetail=false; logoutConfirm=false; systemInfo=false; protonConfirm=false; displayReview=false; powerConfirm=Power::None; interface=wifiInterface(); rows();
+        view={}; keyboard(); btDetail=false;btConfirm=false;btPromptId.clear();btPromptKind.clear(); logoutConfirm=false; systemInfo=false; protonConfirm=false; displayReview=false; powerConfirm=Power::None; interface=wifiInterface(); rows();
         if(kind==PanelKind::Profiles) {
             clearProfilePassword();profileCreating=false;
             if(profilesEnabled) profileRequest(Job::ProfileStatus,"status");
@@ -896,7 +944,8 @@ struct ControlCenter::Impl {
     void activate() {
         const auto choice=view.selected;
         if(command.running()) {
-            if(panel==PanelKind::Tailscale && choice==3 && !authURL.empty()) browser(authURL);
+            if(panel==PanelKind::Bluetooth && btConfirm && (job==Job::BtPair || job==Job::BtConnect)) answerBluetooth(choice==0?"yes":"no");
+            else if(panel==PanelKind::Tailscale && choice==3 && !authURL.empty()) browser(authURL);
             else view.status=storageWriting()?storageActiveMessage():"Operation in progress; Back cancels it";
             return;
         }
@@ -917,7 +966,7 @@ struct ControlCenter::Impl {
                 const auto requested=powerConfirm; powerConfirm=Power::None; view.selected=0; rows();
                 if(choice==0) {
                     if(requested==Power::Reboot) mutate(Job::Reboot,{"reboot"},"Restart requested");
-                    else mutate(Job::Suspend,{"python3","-c","from pathlib import Path; p=Path('/sys/power/state'); modes=p.read_text().split(); assert 'mem' in modes, 'Kernel does not expose suspend-to-RAM'; f=p.open('w'); f.write('mem'); f.close(); print('Device resumed from suspend', flush=True)"},"Suspending; use the hardware power button to resume",30);
+                    else mutate(Job::Suspend,{"surface-power","--sleep"},"Suspending; use the hardware power button to resume",30);
                 } else view.status="Power action cancelled";
             } else if(systemInfo) { systemInfo=false; view.selected=11; rows(); }
             else if(choice<3) mutate(Job::Volume,{"amixer","sset",mixer,choice==0?"5%-":choice==1?"5%+":"toggle"},"Changing audio volume");
@@ -974,8 +1023,8 @@ struct ControlCenter::Impl {
                 else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
                 else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].label(); btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
             } else if(validMac(btMac)) {
-                if(choice==0) mutate(Job::BtPair,{"bluetoothctl","--agent","NoInputNoOutput","--timeout","35","pair",btMac},"Pairing controller; keep it in pairing mode",40);
-                else if(choice==1) mutate(Job::BtConnect,{"bluetoothctl","connect",btMac},"Connecting controller",25);
+                if(choice==0) pairBluetooth(true);
+                else if(choice==1) pairBluetooth(false);
                 else if(choice==2) mutate(Job::BtDisconnect,{"bluetoothctl","disconnect",btMac},"Disconnecting controller");
                 else if(choice==3) mutate(Job::BtForget,{"bluetoothctl","remove",btMac},"Forgetting controller");
                 else { btDetail=false; view.selected=0; rows(); }
@@ -1334,12 +1383,15 @@ struct ControlCenter::Impl {
             view.status="Address: "+btMac+" | "+(information.empty()?diagnostic:information); break;
         }
         case Job::BtPair:
-            if(output.find("Pairing successful")==std::string::npos && output.find("AlreadyExists")==std::string::npos) { view.status="Pairing did not complete: "+diagnostic; break; }
-            mutate(Job::BtTrust,{"bluetoothctl","trust",btMac},"Trusting paired controller"); break;
+        case Job::BtConnect:
+            btPromptId.clear();btPromptKind.clear();btConfirm=false;
+            if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) cancelEdit();
+            rows();
+            view.status=!failed && btComplete?"Controller connected: "+btName:
+                (btError.empty()?"Controller authentication or connection did not complete; see Bluetooth diagnostics":btError);
+            break;
         case Job::BtTrust:
-            if(failed) { view.status=diagnostic; break; }
-            mutate(Job::BtConnect,{"bluetoothctl","connect",btMac},"Connecting paired controller",25); break;
-        case Job::BtConnect: view.status=output.find("Connection successful")!=std::string::npos?"Controller connected: "+btName:"Connection not confirmed: "+diagnostic; break;
+            break;
         case Job::BtDisconnect: view.status=failed?diagnostic:"Controller disconnected"; break;
         case Job::BtForget: view.status=failed?diagnostic:"Controller removed from saved devices"; btDetail=false; rows(); break;
         case Job::TailStatus: {
@@ -1434,7 +1486,7 @@ struct ControlCenter::Impl {
             view.status="403 OS is updated and verified. Your games, saves, profiles and passwords are unchanged. Power off, remove the USB, then power on";break;
         case Job::InstallPoweroff: view.status="Power off requested. After shutdown, remove USB boot media, then power on"; break;
         case Job::Reboot: view.status="Restart requested"; break;
-        case Job::Suspend: view.status="Device resumed from suspend"; break;
+        case Job::Suspend: view.status=failed?diagnostic:"Device resumed from suspend"; break;
         case Job::PokeStatus:
             if(output.find("INSTALLED")==std::string::npos) { view.status="PokeMMO status could not be read: "+diagnostic; break; }
             pokeInstalled=output.find("NOT_INSTALLED")==std::string::npos && output.find("INSTALLED")!=std::string::npos; rows();
@@ -1536,6 +1588,8 @@ struct ControlCenter::Impl {
             } else if(job==Job::BtScan) {
                 // Only parse complete events; a pipe read can split a name.
                 if(control_detail::bluetoothDiscovery(devices,command.text)) rows();
+            } else if(job==Job::BtPair || job==Job::BtConnect) {
+                bluetoothEvents();
             } else if(job==Job::WindowsSetup) {
                 const auto list=lines(command.text); if(!list.empty()) { const auto message=jsonString(list.back(),"message"); if(!message.empty()) view.status=message; }
             } else if(job==Job::PokeInstall || job==Job::LibraryScan || job==Job::DW3Import || job==Job::PokeImport) {
@@ -1561,12 +1615,21 @@ struct ControlCenter::Impl {
                 auto output=std::move(command.text); command.text.clear(); completed(previous,*result,std::move(output));
             }
         }
-        view.busy=command.running() || delayed!=Job::None;
+        view.busy=(command.running() || delayed!=Job::None) && btPromptId.empty();
     }
     void submit() {
         if(!view.editing) return;
         const auto purpose=edit; std::string value=view.input; cancelEdit();
         switch(purpose) {
+        case Edit::BluetoothPin:
+        case Edit::BluetoothPasskey: {
+            const bool digits=!value.empty() && value.size()<=6 && std::all_of(value.begin(),value.end(),[](unsigned char c){return std::isdigit(c);});
+            if((purpose==Edit::BluetoothPasskey && !digits) || value.empty() || value.size()>16 ||
+               value.find_first_of("\r\n")!=std::string::npos) {
+                beginEdit(purpose,purpose==Edit::BluetoothPasskey?"Enter the controller's numeric passkey (0–999999)":"Enter the controller's PIN (1–16 bytes)",true);break;
+            }
+            answerBluetooth(value);std::fill(value.begin(),value.end(),'\0');break;
+        }
         case Edit::ProfileName:
             if(value.empty() || value.size()>24 || value.front()<'a' || value.front()>'z' || value=="root" ||
                !std::all_of(value.begin(),value.end(),[](unsigned char c){return (c>='a' && c<='z') || (c>='0' && c<='9') || c=='_' || c=='-';})) {
@@ -1645,11 +1708,11 @@ struct ControlCenter::Impl {
             else if(action==Action::Right) index=(index+1)%count;
             else if(action==Action::Up) index=index>=13?index-13:std::min(count-1,index+((count-1)/13)*13);
             else if(action==Action::Down) index=index+13<count?index+13:index%13;
-            else if(action==Action::Back) { cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
+            else if(action==Action::Back) { if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) {command.cancel();job=Job::None;btPromptId.clear();btConfirm=false;} cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
             else if(action==Action::Accept) {
                 const auto key=view.keyboard[index];
                 if(key=="Done") submit();
-                else if(key=="Cancel") { cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
+                else if(key=="Cancel") { if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) {command.cancel();job=Job::None;btPromptId.clear();btConfirm=false;} cancelEdit();clearProfilePassword();view.status="Input cancelled"; }
                 else if(key=="Delete") backspace();
                 else if(key=="Shift") { shift=!shift; keyboard(); }
                 else input(key=="Space"?" ":key);
@@ -1658,7 +1721,7 @@ struct ControlCenter::Impl {
         }
         if(action==Action::Back) {
             if(storageWriting()) { view.status=storageActiveMessage(); }
-            else if(command.running() || delayed!=Job::None) { command.cancel(); job=delayed=Job::None; view.busy=false; view.status="Operation cancelled"; }
+            else if(command.running() || delayed!=Job::None) { command.cancel(); job=delayed=Job::None;btPromptId.clear();btPromptKind.clear();btConfirm=false;rows(); view.busy=false; view.status="Operation cancelled"; }
             else if(panel==PanelKind::Display && displayTrial) mutate(Job::DisplayRevert,{"surface-display","--revert"},"Restoring previous resolution");
             else if(panel==PanelKind::Display && displayReview) { displayReview=false; view.selected=0; rows(); view.status="Resolution change cancelled"; }
             else if(panel==PanelKind::Settings && (systemInfo || powerConfirm!=Power::None)) { systemInfo=false; powerConfirm=Power::None; view.selected=0; rows(); view.status="Returned to Settings"; }

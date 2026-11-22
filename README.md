@@ -21,6 +21,7 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
 - Moonlight streaming, Tailscale, a WebKit browser and Wine64/UMU integration.
 - Gamepad, keyboard and touch navigation, with audio, network and display controls.
 - Broad USB/Bluetooth controller drivers, SDL mappings and a custom mapping wizard.
+- Bluetooth PIN/passkey prompts and power-button tap-to-sleep while using apps.
 - Password-protected profiles, a first-run root administrator and separate user app identities.
 - Display resolution trials and sensor-driven rotation of the internal screen.
 - Live USB and an internal-storage installer that carries over local games,
@@ -48,6 +49,7 @@ target disk need a separate backup. External game drives remain separate.
 [Installation and recovery](docs/INSTALL_RECOVERY.md) ·
 [System updates](docs/UPDATES.md) ·
 [Controllers and Bluetooth](docs/BLUETOOTH.md) ·
+[Sleep and power button](docs/POWER.md) ·
 [Remote play](docs/REMOTE_PLAY.md) ·
 [Windows applications](docs/WINDOWS_COMPATIBILITY.md) ·
 [Build from source](docs/BUILD.md)

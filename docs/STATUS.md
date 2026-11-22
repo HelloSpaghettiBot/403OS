@@ -1,14 +1,15 @@
 # Status — November 21, 2026
 
-403 OS is a development preview. The current build updates device names as
-discovery resolves them, with BlueZ client corrections and the required kernel
-crypto interfaces retained. It keeps
-separate live-USB boot selection and updates that preserve installed DATA.
+403 OS is a development preview. The current build adds persistent Bluetooth
+authentication with on-screen pairing requests and an independent power-button
+sleep service. Discovery name updates, required kernel crypto interfaces,
+separate live-USB boot selection and updates that preserve installed DATA remain
+included.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `36975c442d05600caa4940e1a75b89a999d8a57f0ed16c8a8834485bb665327f` |
-| Pristine internal-install image | `dc8b04e04450b8d278aa93b7b31e74621ce833788db17b45a4625d94c4830313` |
+| Public live USB | `e293eea65d43a7f863bc2fa8324dad1829a0ddf6acc07a87aeda8cd7dc61f19c` |
+| Pristine internal-install image | `87d3ef1f575a7725835919c5cdd877fac5c0c82442e535f26575f3bf5348f24d` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
 embedded installation payload and its root-owned read-only metadata. The last
@@ -18,9 +19,22 @@ has not been booted separately.
 
 ## Current Bluetooth correction
 
+The pairing path now keeps a real authentication agent alive and presents PIN,
+passkey, confirmation and authorization requests in HOME. The preceding
+one-shot command did not register its agent; physical pairing was reported
+failing despite working discovery. Twelve actual shipped-client tests now pass
+on a private D-Bus, including real agent callbacks and explicit rejection.
+Pairing succeeds only after paired/trusted/connected state readback. Failed
+pairing and connection attempts save fresh private daemon diagnostics.
+
+Tap-to-sleep runs in an independent input service, also used by the Settings
+suspend action. Sixteen focused tests cover taps, holds, repeats, dropped/wake
+events, hotplug and storage-operation locks. Physical Surface sleep/wake,
+controller pairing and reconnect remain acceptance work.
+
 The shipped BlueZ 5.86 client reproduced successful but empty adapter, power
 and device-command output against a valid isolated adapter. Upstream fixes
-are now backported. Five actual-client integration tests pass for listing,
+are backported. The preceding five actual-client tests covered listing,
 power readback, discovery, pairing, trust, connect, disconnect, removal, delayed
 name resolution and devices without a remote name.
 The helper reports silent client failures separately and saves bounded daemon
@@ -33,14 +47,22 @@ for partial events, byte-by-byte updates and retention of resolved names when
 a cached address alias is returned. The updated binary completed UEFI live-boot
 acceptance; real-radio name presentation still needs a physical test.
 
-Current-image UEFI run `20261121-194547-live` passed all implemented runtime
-checks, including existing-password login, the 28-game library and covers,
+Current-image UEFI run `20261121-225552-live` passed all implemented runtime
+checks, including a power-button suspend/wake cycle, existing-password login, the
+28-game library and covers,
 eleven emulator engines, NES input/SRAM, browser/global return, live rotation,
 networking, non-silent audio and clean GUI shutdown. It selected USB root and
 DATA correctly with an older internal installation attached. Overall status is
 PARTIAL for remaining hardware, recovery and enrolled-streaming acceptance.
 The VM does not provide the Surface radio; name-delivery behavior is covered
 by the native and isolated actual-client tests described above.
+
+Sleep acceptance used virtual firmware with S3 disabled. The helper remained
+blocked for 5.02 seconds, then returned after the next ACPI power event; HOME
+accepted fresh input and the remaining runtime checks passed. Virtual clocks
+kept ticking during s2idle, so this proves the suspend/wake path without
+establishing physical CPU sleep residency or battery consumption. Earlier
+virtual S3 wake attempts failed. The Surface kernel sleep policy is unchanged.
 
 AF_ALG hash/cipher APIs and AES/ECB/CMAC are built into the kernel. The new
 runtime gates check real client shell output and public crypto known answers.

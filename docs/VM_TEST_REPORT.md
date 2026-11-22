@@ -1,11 +1,26 @@
 # VM test report
 
+## Pairing and power source checks
+
+The actual shipped BlueZ client reproduces the missing agent in one-shot
+pairing. Its replacement keeps an interactive agent alive and waits for
+registration before pairing. Twelve private D-Bus tests pass, including legacy
+PIN, numeric passkey, confirmation, authorization, rejection and final
+paired/trusted/connected readback. No host Bluetooth radio is used.
+
+Current native tests cover prompt validation, positive completion requirements
+and a live child receiving multiple replies on a persistent input channel.
+Fifty-two focused Bluetooth tests and sixteen power tests pass. All 412 main-suite tests passed, including sixteen power tests and twelve
+actual-client integration tests. The VM harness has 45 passing source tests.
+Power tests use temporary state files and real lock contention; they never
+suspend the host. Source checks do not establish Surface sleep or pairing.
+
 ## Current compiled artifacts
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `36975c442d05600caa4940e1a75b89a999d8a57f0ed16c8a8834485bb665327f` |
-| Pristine installation payload | `dc8b04e04450b8d278aa93b7b31e74621ce833788db17b45a4625d94c4830313` |
+| Public live USB | `e293eea65d43a7f863bc2fa8324dad1829a0ddf6acc07a87aeda8cd7dc61f19c` |
+| Pristine installation payload | `87d3ef1f575a7725835919c5cdd877fac5c0c82442e535f26575f3bf5348f24d` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
@@ -16,19 +31,30 @@ to their recorded revisions.
 
 ## Current revision: live boot
 
-UEFI run `20261121-194547-live` booted the updated compiled UI and pristine
+UEFI run `20261121-225552-live` booted the updated compiled UI and pristine
 installation payload through OVMF/KVM, with 4 GiB RAM, four CPUs and an
-1800×1200 framebuffer. An older SATA installation was attached; root and DATA
-came from the selected USB. All implemented checks passed: existing-password
+1920×1080 Bochs framebuffer, host CPU model and PS/2 keyboard. An older SATA installation was attached; root and DATA
+came from the selected USB. All implemented checks passed: power-button suspend/wake, existing-password
 login, the 28-game library and covers, eleven emulator runtime probes, NES
 input/SRAM, real client output and AES/CMAC known answers, browser/global
 return, live rotation, network, non-silent audio and GUI power-off. Overall
 status remains PARTIAL for physical hardware, recovery and enrolled streaming.
-The updater operation was not repeated for this UI-only revision.
+The updater operation was not repeated for this pairing/power revision.
 
 The packaged UI binary matches the compiled target binary. The live test uses
 a disposable overlay; its synthetic login fixture leaves source authentication
 unchanged. No physical Bluetooth adapter was passed through to QEMU.
+
+The real ACPI button passed through the shipped evdev power service. With
+virtual S3 disabled, the kernel selected s2idle without a guest policy override.
+The helper stayed blocked for the complete 5.02-second host interval, then
+reported matching entry/resume identifiers after a second ACPI button event.
+Fresh HOME keyboard input and the remaining runtime checks passed afterward.
+The reported BOOTTIME-minus-MONOTONIC difference was 0.0 seconds: virtual idle
+can leave timekeeping running while userspace/devices suspend. This is a
+suspend/wake check, not proof of deep CPU residency or physical power savings.
+Earlier virtual S3 attempts entered sleep but did not recover; S3 resume is not
+claimed. Physical Surface tap/wake and controller reconnect remain untested.
 
 ## Bluetooth device-name source checks
 
@@ -39,7 +65,7 @@ device reads its latest name and alias. Current native parser tests pass for
 split events, byte-by-byte delivery, alias changes and cached-name retention.
 Native ControlCenter checks also pass.
 
-All five shipped-client integration tests pass against isolated D-Bus fixtures,
+The preceding five shipped-client integration tests passed against isolated D-Bus fixtures,
 including a name arriving during discovery and an absent optional remote name
 with BlueZ's address alias. These checks access no host radio. The name-display
 binary completed the live-boot checks above. Discovery name updates remain

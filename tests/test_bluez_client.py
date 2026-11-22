@@ -4,10 +4,13 @@ Requires an existing x86_64 target build plus host dbus-python/PyGObject.
 The ordinary source suite skips these integration checks when unavailable.
 """
 from pathlib import Path
+import importlib.util
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import unittest
 
@@ -68,9 +71,18 @@ class BluezClientIntegrationTests(unittest.TestCase):
             'Adapter': dbus.ObjectPath(ADAPTER_PATH), 'Paired': dbus.Boolean(False),
             'Trusted': dbus.Boolean(False), 'Connected': dbus.Boolean(False)}
         self.discovery_callback = None
+        self.pair_requires_agent = False
+        self.agents = {}
+        self.agent_events = []
+        self.live_agent_checked = False
+        self.authentication_method = None
+        self.authentication_value = None
+        self.authentication_replies = []
+        self.operation_events = []
         fixture = self
         objects = {dbus.ObjectPath(ADAPTER_PATH): {'org.bluez.Adapter1': self.adapter_properties},
-                   dbus.ObjectPath(DEVICE_PATH): {'org.bluez.Device1': self.device_properties}}
+                   dbus.ObjectPath(DEVICE_PATH): {'org.bluez.Device1': self.device_properties},
+                   dbus.ObjectPath('/org/bluez'): {'org.bluez.AgentManager1': {}}}
 
         class Properties(dbus.service.Object):
             def __init__(self, bus, path, interface, properties):
@@ -89,6 +101,8 @@ class BluezClientIntegrationTests(unittest.TestCase):
                     raise dbus.exceptions.DBusException('Wrong interface',
                                 name='org.freedesktop.DBus.Error.InvalidArgs')
                 self.properties[str(name)] = value
+                if str(interface) == 'org.bluez.Device1' and str(name) == 'Trusted':
+                    fixture.operation_events.append('trust')
                 self.PropertiesChanged(self.interface, {str(name): value}, [])
 
             @dbus.service.signal('org.freedesktop.DBus.Properties', signature='sa{sv}as')
@@ -115,17 +129,70 @@ class BluezClientIntegrationTests(unittest.TestCase):
                 del objects[path]
 
         class Device(Properties):
-            @dbus.service.method('org.bluez.Device1', in_signature='', out_signature='')
-            def Pair(self):
-                self.properties['Paired'] = dbus.Boolean(True)
+            @dbus.service.method('org.bluez.Device1', in_signature='', out_signature='',
+                                 sender_keyword='sender', async_callbacks=('reply', 'error'))
+            def Pair(self, reply, error, sender=None):
+                fixture.operation_events.append('pair')
+                def paired(*values):
+                    if fixture.authentication_method == 'RequestPinCode':
+                        if tuple(str(value) for value in values) != (fixture.authentication_value,):
+                            error(dbus.exceptions.DBusException('Incorrect fixture PIN',
+                                                                name='org.bluez.Error.AuthenticationFailed'))
+                            return
+                    if fixture.authentication_method == 'RequestPasskey':
+                        if tuple(int(value) for value in values) != (fixture.authentication_value,):
+                            error(dbus.exceptions.DBusException('Incorrect fixture passkey',
+                                                                name='org.bluez.Error.AuthenticationFailed'))
+                            return
+                    fixture.authentication_replies.append(tuple(values))
+                    self.properties['Paired'] = dbus.Boolean(True)
+                    self.PropertiesChanged('org.bluez.Device1', {'Paired': dbus.Boolean(True)}, [])
+                    reply()
+
+                if not fixture.pair_requires_agent:
+                    paired()
+                    return
+                fixture.agent_events.append(('pair', str(sender)))
+                registered = fixture.agents.get(str(sender))
+                if registered is None:
+                    error(dbus.exceptions.DBusException('Pair requires an agent registered by its caller',
+                                                        name='org.bluez.Error.AuthenticationFailed'))
+                    return
+                path, _ = registered
+
+                def agent_ready(xml):
+                    if 'org.bluez.Agent1' not in str(xml):
+                        error(dbus.exceptions.DBusException('Registered agent is not exported',
+                                                            name='org.bluez.Error.AuthenticationFailed'))
+                        return
+                    fixture.live_agent_checked = True
+                    fixture.agent_events.append(('agent-live', str(sender)))
+                    if fixture.authentication_method is None:
+                        paired()
+                        return
+                    arguments = [dbus.ObjectPath(DEVICE_PATH)]
+                    if fixture.authentication_method == 'RequestConfirmation':
+                        arguments.append(dbus.UInt32(fixture.authentication_value))
+                    method = getattr(agent, fixture.authentication_method)
+                    method(*arguments, dbus_interface='org.bluez.Agent1',
+                           reply_handler=paired, error_handler=error, timeout=5)
+
+                # Introspection proves that the registered object remains alive
+                # throughout Pair without accepting or inventing an auth reply.
+                agent = fixture.bus.get_object(sender, path, introspect=False)
+                agent.Introspect(dbus_interface='org.freedesktop.DBus.Introspectable',
+                                 reply_handler=agent_ready, error_handler=error, timeout=1)
 
             @dbus.service.method('org.bluez.Device1', in_signature='', out_signature='')
             def Connect(self):
+                fixture.operation_events.append('connect')
                 self.properties['Connected'] = dbus.Boolean(True)
+                self.PropertiesChanged('org.bluez.Device1', {'Connected': dbus.Boolean(True)}, [])
 
             @dbus.service.method('org.bluez.Device1', in_signature='', out_signature='')
             def Disconnect(self):
                 self.properties['Connected'] = dbus.Boolean(False)
+                self.PropertiesChanged('org.bluez.Device1', {'Connected': dbus.Boolean(False)}, [])
 
         class Manager(dbus.service.Object):
             @dbus.service.method('org.freedesktop.DBus.ObjectManager', in_signature='',
@@ -133,13 +200,30 @@ class BluezClientIntegrationTests(unittest.TestCase):
             def GetManagedObjects(self):
                 return objects
 
+        class AgentManager(Properties):
+            @dbus.service.method('org.bluez.AgentManager1', in_signature='os', out_signature='',
+                                 sender_keyword='sender')
+            def RegisterAgent(self, path, capability, sender=None):
+                fixture.agents[str(sender)] = (str(path), str(capability))
+                fixture.agent_events.append(('registered', str(sender)))
+
+            @dbus.service.method('org.bluez.AgentManager1', in_signature='o', out_signature='',
+                                 sender_keyword='sender')
+            def UnregisterAgent(self, path, sender=None):
+                fixture.agents.pop(str(sender), None)
+
+            @dbus.service.method('org.bluez.AgentManager1', in_signature='o', out_signature='')
+            def RequestDefaultAgent(self, path):
+                pass
+
         # BlueZ's ObjectManager root is '/', while adapter paths start /org/bluez.
         self.manager = Manager(self.bus, '/')
+        self.agent_manager = AgentManager(self.bus, '/org/bluez', 'org.bluez.AgentManager1', {})
         self.adapter = Adapter(self.bus, ADAPTER_PATH, 'org.bluez.Adapter1', self.adapter_properties)
         self.device = Device(self.bus, DEVICE_PATH, 'org.bluez.Device1', self.device_properties)
 
     def stop_bus(self):
-        for attribute in ('manager', 'adapter', 'device'):
+        for attribute in ('manager', 'agent_manager', 'adapter', 'device'):
             if hasattr(self, attribute):
                 getattr(self, attribute).remove_from_connection()
         if hasattr(self, 'name'):
@@ -152,19 +236,134 @@ class BluezClientIntegrationTests(unittest.TestCase):
         self.daemon.stderr.close()
 
     def command(self, *arguments):
-        prefix = [str(LOADER), '--library-path', str(TARGET / 'lib') + ':' + str(TARGET / 'usr/lib'),
-                  str(CLIENT)]
-        result = subprocess.run(prefix + list(arguments), env=self.environment,
+        result = subprocess.run(self.client_argv() + list(arguments), env=self.environment,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stdout)
         return ANSI.sub('', result.stdout)
+
+    @staticmethod
+    def client_argv():
+        return [str(LOADER), '--library-path',
+                str(TARGET / 'lib') + ':' + str(TARGET / 'usr/lib'), str(CLIENT)]
+
+    def pairing_session(self, responses):
+        # Import the helper's core directly so its real-image CLI guard is
+        # retained in production while tests use only this private bus.
+        spec = importlib.util.spec_from_file_location(
+            'surface_bluetooth_pair_integration', ROOT / 'services/bluetooth-pair.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        events = []
+
+        def receive(event):
+            events.append(event)
+            if event.get('event') == 'prompt':
+                value = responses[event['kind']]
+                os.write(writer, (json.dumps({'id': event['id'], 'value': value}) + '\n').encode())
+
+        session = module.PairingSession(client_argv=self.client_argv(), env=self.environment,
+                                        emit=receive, response_fd=reader)
+        return module, session, events
 
     def test_noninteractive_list_and_show_report_actual_fixture_adapter(self):
         self.assertIn('Controller 00:11:22:33:44:55', self.command('list'))
         information = self.command('show')
         self.assertIn('Controller 00:11:22:33:44:55', information)
         self.assertRegex(information, r'Powered:\s+yes')
+
+    def test_noninteractive_queries_without_agent_option_do_not_register_agent(self):
+        self.assertIn('Controller 00:11:22:33:44:55', self.command('list'))
+        self.assertIn('Device ' + ADDRESS + ' Fixture controller', self.command('devices'))
+        self.assertEqual(self.agent_events, [])
+        self.assertEqual(self.agents, {})
+
+    def test_one_shot_agent_option_does_not_register_an_interactive_agent(self):
+        # Document the actual BlueZ 5.86 behavior that requires our persistent
+        # interactive pairing session. --agent alone does not register an
+        # Agent1 when bluetoothctl also receives a positional command.
+        self.pair_requires_agent = True
+        output = self.command('--agent', 'NoInputNoOutput', '--timeout', '2', 'pair', ADDRESS)
+        self.assertIn('Failed to pair: org.bluez.Error.AuthenticationFailed', output)
+        self.assertNotIn('Agent registered', output)
+        self.assertFalse(self.device_properties['Paired'])
+        self.assertFalse(self.live_agent_checked)
+        self.assertEqual([event[0] for event in self.agent_events], ['pair'])
+        self.assertEqual(self.agents, {})
+
+    def test_persistent_agent_answers_legacy_pin_then_trusts_and_connects(self):
+        self.pair_requires_agent = True
+        self.authentication_method = 'RequestPinCode'
+        self.authentication_value = '0000'
+        _, session, events = self.pairing_session({'pin': '0000'})
+        result = session.run(ADDRESS, pair=True)
+        self.assertEqual(result, {'paired': True, 'trusted': True, 'connected': True})
+        self.assertEqual(self.operation_events, ['pair', 'trust', 'connect'])
+        self.assertTrue(self.live_agent_checked)
+        self.assertEqual(self.authentication_replies, [('0000',)])
+        self.assertEqual([event['kind'] for event in events if event.get('event') == 'prompt'], ['pin'])
+        self.assertEqual([event[0] for event in self.agent_events],
+                         ['registered', 'pair', 'agent-live'])
+        sender = self.agent_events[0][1]
+        self.assertTrue(all(event[1] == sender for event in self.agent_events))
+        self.assertEqual(self.agents[sender], ('/org/bluez/agent', 'KeyboardDisplay'))
+        self.assertTrue(self.device_properties['Paired'])
+        self.assertTrue(self.device_properties['Trusted'])
+        self.assertTrue(self.device_properties['Connected'])
+
+    def test_persistent_agent_requests_confirmation_before_connecting(self):
+        self.pair_requires_agent = True
+        self.authentication_method = 'RequestConfirmation'
+        self.authentication_value = 123456
+        _, session, events = self.pairing_session({'confirm': 'yes'})
+        result = session.run(ADDRESS, pair=True)
+        self.assertEqual(result, {'paired': True, 'trusted': True, 'connected': True})
+        prompts = [event for event in events if event.get('event') == 'prompt']
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]['kind'], 'confirm')
+        self.assertIn('123456', str(prompts[0]))
+        self.assertEqual(self.authentication_replies, [()])
+        self.assertEqual(self.operation_events, ['pair', 'trust', 'connect'])
+
+    def test_persistent_agent_answers_numeric_passkey(self):
+        self.pair_requires_agent = True
+        self.authentication_method = 'RequestPasskey'
+        self.authentication_value = 123456
+        _, session, events = self.pairing_session({'passkey': '123456'})
+        result = session.run(ADDRESS, pair=True)
+        self.assertEqual(result, {'paired': True, 'trusted': True, 'connected': True})
+        self.assertEqual([event['kind'] for event in events if event.get('event') == 'prompt'],
+                         ['passkey'])
+        self.assertEqual(self.authentication_replies, [(123456,)])
+        self.assertEqual(self.operation_events, ['pair', 'trust', 'connect'])
+
+    def test_persistent_agent_authorizes_pairing_before_connecting(self):
+        self.pair_requires_agent = True
+        self.authentication_method = 'RequestAuthorization'
+        _, session, events = self.pairing_session({'confirm': 'yes'})
+        result = session.run(ADDRESS, pair=True)
+        self.assertEqual(result, {'paired': True, 'trusted': True, 'connected': True})
+        prompts = [event for event in events if event.get('event') == 'prompt']
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]['kind'], 'confirm')
+        self.assertEqual(self.authentication_replies, [()])
+        self.assertEqual(self.operation_events, ['pair', 'trust', 'connect'])
+
+    def test_rejected_confirmation_does_not_trust_or_connect(self):
+        self.pair_requires_agent = True
+        self.authentication_method = 'RequestConfirmation'
+        self.authentication_value = 123456
+        module, session, _ = self.pairing_session({'confirm': 'no'})
+        with self.assertRaises(module.PairingError):
+            session.run(ADDRESS, pair=True)
+        self.assertEqual(self.operation_events, ['pair'])
+        self.assertFalse(self.device_properties['Paired'])
+        self.assertFalse(self.device_properties['Trusted'])
+        self.assertFalse(self.device_properties['Connected'])
 
     def test_noninteractive_power_confirmation_and_readback(self):
         self.assertIn('Changing power off succeeded', self.command('power', 'off'))

@@ -269,10 +269,17 @@ def main(argv=None):
     action.add_argument('--status', action='store_true')
     action.add_argument('--power-on', action='store_true')
     action.add_argument('--boot-check', action='store_true')
+    action.add_argument('--record-error', metavar='REASON')
     args = parser.parse_args(argv)
     try:
         guard()
-        if args.boot_check:
+        if args.record_error is not None:
+            reason = ADDRESS.sub('<address>', args.record_error)
+            reason = ''.join(c for c in reason if ord(c) >= 32 and ord(c) != 127)[:256]
+            if not reason.strip():
+                raise BluetoothError('A diagnostic reason is required')
+            save_diagnostics('bluetooth-last-error.json', reason)
+        elif args.boot_check:
             try:
                 wait_adapter()
                 reason = 'Adapter registered with BlueZ'

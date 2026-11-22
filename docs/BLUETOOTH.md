@@ -6,6 +6,13 @@ pairings are retained across shutdown and installation. Bluetooth-only
 software radio blocks are cleared when you explicitly start a scan;
 hardware radio blocks remain under the device's control.
 
+Pairing keeps an authentication agent running until the operation finishes.
+If the controller requests a PIN or passkey, enter it using the on-screen
+keyboard. Confirm a displayed passkey only when it matches your device.
+Confirmation starts on **Reject**; rejection or cancellation does not trust
+or connect the device. Success requires the device to report that it is paired,
+trusted and connected. **Connect** reconnects without pairing again.
+
 Scanning runs for 20 seconds and fills in device names as they arrive. Keep
 your controller in pairing mode until the scan finishes. Named devices appear
 first, with a short address suffix to distinguish identical controllers.
@@ -60,6 +67,18 @@ reset is applied.
 The controller screen waits for an actual BlueZ adapter and verifies its
 powered state before scanning. A silent command-client failure is reported
 separately from missing hardware or unfinished initialization.
+
+The original one-command pairing path supplied an agent option that BlueZ's
+noninteractive mode ignored. The replacement uses a persistent interactive
+client and waits for actual agent registration before pairing. Isolated tests
+exercise the shipped client's PIN, passkey, confirmation and authorization
+callbacks, rejection, command order and final state readback.
+
+`br-connection-create-socket` is BlueZ's generic label for an I/O error; it can
+also represent remote connection or authentication failure. Pairing and
+connection errors now save a fresh private diagnostic record containing the
+daemon's more specific error. This build does not disable authentication,
+erase existing bonds automatically or accept pairing questions silently.
 
 ## Diagnostic records
 

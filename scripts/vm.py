@@ -166,14 +166,14 @@ class VM:
         accelerator = "kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg"
         memory, cpus = args.memory, args.cpus
         command = ["qemu-system-x86_64", "-name", "Surface Go OS disposable VM",
-                   "-machine", f"q35,accel={accelerator}", "-cpu", "qemu64",
+                   "-machine", f"q35,accel={accelerator}", "-cpu", args.cpu_model,
                    "-smp", f"{cpus},sockets=1,cores=2,threads={cpus // 2}",
                    "-m", str(memory), "-no-reboot",
                    "-smbios", "type=1,product=Surface Go OS Disposable Test VM",
                    "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
                    "-drive", f"if=pflash,format=raw,file={directory / 'OVMF_VARS.fd'}",
-                   "-device", f"virtio-vga,xres={args.width},yres={args.height}",
-                   "-device", "qemu-xhci,id=xhci", "-device", "usb-kbd",
+                   "-device", f"{'VGA' if args.gpu_model=='bochs' else 'virtio-vga'},xres={args.width},yres={args.height}",
+                   "-device", "qemu-xhci,id=xhci",
                    "-device", "usb-mouse", "-device", "usb-tablet",
                    "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0",
                    "-audiodev", f"driver=wav,id=audio0,path={directory / 'audio.wav'}", "-device", "intel-hda",
@@ -181,6 +181,10 @@ class VM:
                    "-serial", f"file:{self.log}", "-monitor", "none",
                    "-qmp", f"unix:{self.qmp_path},server=on,wait=off",
                    "-display", "sdl,gl=off" if args.visible else "none"]
+        if args.keyboard_model == 'usb':
+            command += ['-device', 'usb-kbd']
+        if args.sleep_model == 's2idle':
+            command += ['-global', 'ICH9-LPC.disable_s3=1']
         options = prepare_test_options(directory, args, disk, install=install, media=media)
         if options is not None:
             command += ["-virtfs", f"local,id=test_options,path={options},mount_tag=surface_test_options,security_model=none,readonly=on"]
@@ -243,6 +247,10 @@ class VM:
         self.stderr = open(directory / "qemu.log", "wb")
         self.process = subprocess.Popen(command, stdout=self.stderr, stderr=self.stderr)
         self.metadata = {"accelerator": accelerator, "memory_mib": memory,
+                         "cpu_model": args.cpu_model, "firmware": str(firmware),
+                         "gpu_model": args.gpu_model,
+                         "sleep_model": args.sleep_model,
+                         "keyboard_model": args.keyboard_model,
                          "vcpus": cpus, "installer_attached": install or media,
                          "direct_kernel_boot": install, "sata": args.sata,
                          "usb_storage":bool(getattr(args,'usb_storage',False)), "companion_attached":bool(companion),
@@ -730,8 +738,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--test-update-ui',action='store_true',help='Update only the disposable overlay of an explicitly supplied installed companion')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
     parser.add_argument("--cpus", type=int, choices=[2, 4], default=4)
-    parser.add_argument("--width", type=int, choices=[1280, 1800], default=1800)
-    parser.add_argument("--height", type=int, choices=[800, 1200], default=1200)
+    parser.add_argument("--width", type=int, choices=[1280, 1800, 1920], default=1800)
+    parser.add_argument("--height", type=int, choices=[800, 1080, 1200], default=1200)
     parser.add_argument("--sata", action="store_true")
     parser.add_argument('--usb-storage',action='store_true',help='UEFI boot the primary disk through the emulated USB controller')
     parser.add_argument('--companion-disk',type=Path,help='Attach a disposable overlay of this other VM disk to check boot selection')
@@ -741,6 +749,11 @@ def parse_arguments(argv=None):
     parser.add_argument("--library-root", type=Path,
                         help="Explicit read-only user game directory to share with this VM")
     parser.add_argument('--expect-library-games',type=int,default=0,help='Require this many catalog entries and real embedded cover loading')
+    parser.add_argument('--test-power-button',action='store_true',help='Test real ACPI power input, measured sleep, wake and renewed graphical input')
+    parser.add_argument('--sleep-model',default='s3',choices=['s3','s2idle'],help='Virtual firmware sleep support; s2idle disables virtual ACPI S3')
+    parser.add_argument('--cpu-model',default='qemu64',choices=['qemu64','host'],help='Virtual CPU model; host requires KVM')
+    parser.add_argument('--gpu-model',default='virtio',choices=['virtio','bochs'],help='Virtual display; Bochs provides the kernel suspend/resume callbacks used by sleep acceptance')
+    parser.add_argument('--keyboard-model',default='usb',choices=['usb','ps2'],help='Virtual keyboard input transport')
     parser.add_argument("--catalog", type=Path,default=ROOT / "artifacts/library/catalog.tsv")
     parser.add_argument("--ovmf", default="/usr/share/edk2/ovmf/OVMF_CODE.fd")
     args = parser.parse_args(argv)
@@ -826,6 +839,66 @@ def main():
             summary['display_configuration']=serial_json(vm,'SURFACE_DISPLAY_STARTUP ',timeout=15)
             vm.wait_for("SURFACE_EFI_PASS")
             summary["checks"]["uefi_graphical_boot"] = "PASS"
+            if args.test_power_button:
+                # ACPI button input must pass through the shipped evdev daemon;
+                # no guest shell or direct sysfs suspend request is injected.
+                sleep_offset = len(vm.log.read_text(errors='replace'))
+                vm.qmp('system_powerdown')
+                entered = serial_json(vm, 'SURFACE_POWER ', after=sleep_offset,
+                                      predicate=lambda value: value.get('event') == 'enter', timeout=20)
+                if args.sleep_model == 's2idle':
+                    if entered.get('policy') != 's2idle':
+                        raise RuntimeError('Virtual firmware did not select s2idle')
+                    # Virtual CPU idle drivers may lack enter_s2idle callbacks:
+                    # clocks can keep ticking while tasks/devices suspend.
+                    # Prove the request remains blocked until a real wake event
+                    # instead of requiring a stopped virtual timekeeper.
+                    dwell_start = time.monotonic()
+                    while time.monotonic() - dwell_start < 5:
+                        for line in vm.log.read_text(errors='replace')[sleep_offset:].splitlines():
+                            if not line.startswith('SURFACE_POWER '):
+                                continue
+                            try: event = json.loads(line[len('SURFACE_POWER '):])
+                            except json.JSONDecodeError: continue
+                            if event.get('event') == 'resumed' and event.get('id') == entered.get('id'):
+                                raise RuntimeError('The suspend request returned before the wake button')
+                        if vm.process.poll() is not None:
+                            raise RuntimeError('The guest stopped during sleep')
+                        time.sleep(.1)
+                    summary['power_blocked_before_wake_seconds'] = round(time.monotonic()-dwell_start,3)
+                    vm.qmp('system_powerdown')
+                else:
+                    deadline = time.monotonic() + 20
+                    while vm.qmp('query-status').get('status') != 'suspended':
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('A short virtual power-button tap did not suspend the guest')
+                        time.sleep(0.1)
+                    time.sleep(5)
+                    vm.qmp('system_wakeup')
+                resumed = serial_json(vm, 'SURFACE_POWER ', after=sleep_offset,
+                                      predicate=lambda value: value.get('event') == 'resumed', timeout=20)
+                if (not isinstance(entered.get('id'),str) or not entered['id']
+                        or resumed.get('id') != entered['id'] or resumed.get('policy') != entered.get('policy')
+                        or resumed.get('state') != entered.get('state')
+                        or not isinstance(resumed.get('sleep_seconds'), (int,float))
+                        or not 0 <= resumed['sleep_seconds'] < 120
+                        or args.sleep_model != 's2idle' and resumed['sleep_seconds'] < 2):
+                    raise RuntimeError('The guest did not report a matching measured sleep cycle')
+                summary['power_sleep'] = resumed
+                deadline = time.monotonic() + 15
+                while vm.qmp('query-status').get('status') != 'running':
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('The suspended guest did not resume')
+                    time.sleep(0.1)
+                time.sleep(3)
+                if vm.qmp('query-status').get('status') != 'running':
+                    raise RuntimeError('The guest re-suspended after wake')
+                resumed_offset = len(vm.log.read_text(errors='replace'))
+                vm.key('down')
+                vm.wait_for('SURFACE_INPUT ',15,after=resumed_offset)
+                vm.key('up')
+                vm.screenshot('power-resumed.png')
+                summary['checks']['power_button_suspend_resume'] = 'PASS'
             mounts = vm.wait_for("SURFACE_ROOT_MOUNTS_END")
             if " / ext4 " not in mounts or " /data ext4 " not in mounts:
                 raise RuntimeError("Root or separate data filesystem not mounted")
@@ -866,6 +939,7 @@ def main():
             summary["checks"]["bluetooth_transport_module"] = "PASS" if "SURFACE_BLUETOOTH_TRANSPORT_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_client_output"] = "PASS" if "SURFACE_BLUETOOTH_CLIENT_OUTPUT_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_crypto_known_answers"] = "PASS" if "SURFACE_BLUETOOTH_CRYPTO_PASS" in data else "FAIL"
+            summary["checks"]["bluetooth_socket_capabilities"] = "PASS" if "SURFACE_BLUETOOTH_SOCKETS_PASS" in data else "FAIL"
             summary["checks"]["bluetooth_private_boot_diagnostics"] = "PASS" if "SURFACE_BLUETOOTH_DIAGNOSTICS_PASS" in data else "FAIL"
             app_log=vm.log.read_text(errors="replace")
             record_proton_result(summary,app_log,args.test_proton)

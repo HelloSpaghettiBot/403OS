@@ -53,6 +53,15 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 ## Bluetooth client correction
 
+- [x] Persistent authentication agent with actual shipped-client PIN, passkey,
+  confirmation, authorization, rejection and verified connection readback tests.
+- [x] Pairing/connection failure diagnostics and radio-free socket API probe.
+- [x] Independent power-button tap-to-sleep handler, repeat/hold/wake-event
+  guards and storage-operation inhibition, covered by sixteen source fixtures.
+- [x] Same-image UEFI ACPI button suspend/wake with a five-second blocked interval
+  and renewed HOME input (`20261121-225552-live`, virtual s2idle).
+- [ ] Physical Surface pairing, controller reconnect and button sleep/wake.
+
 - [x] Reproduce BlueZ 5.86 empty noninteractive output using the shipped client
   against a valid isolated adapter; backport both upstream corrections.
 - [x] Verify actual client list/show, power readback, discovery, pairing, trust,

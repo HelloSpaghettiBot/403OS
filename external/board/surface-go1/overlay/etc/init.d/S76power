@@ -1,0 +1,29 @@
+#!/bin/sh
+DAEMON=/usr/sbin/surface-power
+PIDFILE=/run/surface-power.pid
+case "$1" in
+start)
+    test -f /etc/surface-image-id || exit 1
+    grep -q ' /data ext4 ' /proc/mounts || exit 1
+    umask 077
+    # Keep physical service output in RAM. Only the disposable VM exports
+    # bounded, nonpersonal sleep diagnostics for automated wake acceptance.
+    LOG=/run/surface-power.log
+    if test "$(cat /sys/class/dmi/id/product_name 2>/dev/null)" = 'Surface Go OS Disposable Test VM'; then
+        LOG=/dev/ttyS0
+    fi
+    start-stop-daemon -S -b -m -p "$PIDFILE" -O "$LOG" -x "$DAEMON" -- --watch
+    ;;
+stop)
+    start-stop-daemon -K -p "$PIDFILE"
+    rm -f "$PIDFILE"
+    ;;
+restart)
+    "$0" stop
+    "$0" start
+    ;;
+*)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

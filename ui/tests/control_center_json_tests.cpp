@@ -3,8 +3,143 @@
 #include "../src/control_center.cpp"
 #include <cassert>
 #include <iostream>
+#include <thread>
+
+namespace {
+using surface::control_detail::Command;
+void waitForText(Command& command,const std::string& expected) {
+    const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(command.text.find(expected)==std::string::npos) {
+        assert(!command.update() && "Interactive child exited before the expected response");
+        assert(std::chrono::steady_clock::now()<limit && "Interactive child response exceeded test deadline");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+int waitForExit(Command& command) {
+    const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(std::chrono::steady_clock::now()<limit) {
+        if(const auto result=command.update()) return *result;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    assert(false && "Child cleanup exceeded test deadline");
+    return -1;
+}
+void bluetoothPairingProtocolTests() {
+    using surface::control_detail::bluetoothPrompt;
+    using surface::control_detail::bluetoothCompleted;
+    for(const auto* kind:{"pin","passkey","confirm"}) {
+        const auto record="{\"event\":\"prompt\",\"id\":\"request-1_a\",\"kind\":"+
+            surface::jsonQuote(kind)+",\"message\":\"Confirm controller authentication\"}";
+        const auto prompt=bluetoothPrompt(record);
+        assert(prompt && prompt->id=="request-1_a" && prompt->kind==kind &&
+               prompt->message=="Confirm controller authentication");
+    }
+    for(const auto* invalid:{R"({})",R"({"event":"message","id":"1","kind":"pin","message":"PIN"})",
+        R"({"event":"prompt","kind":"pin","message":"PIN"})",
+        R"({"event":"prompt","id":"","kind":"pin","message":"PIN"})",
+        R"({"event":"prompt","id":"request 1","kind":"pin","message":"PIN"})",
+        R"({"event":"prompt","id":"1\n2","kind":"pin","message":"PIN"})",
+        R"({"event":"prompt","id":"1","kind":"unknown","message":"PIN"})",
+        R"({"event":"prompt","id":"1","message":"PIN"})",
+        R"({"event":"prompt","id":"1","kind":"pin","message":""})",
+        R"({"event":"prompt","id":"1","kind":"pin","message":null})"})
+        assert(!bluetoothPrompt(invalid));
+    assert(!bluetoothPrompt("{\"event\":\"prompt\",\"id\":"+surface::jsonQuote(std::string(65,'a'))+
+        ",\"kind\":\"pin\",\"message\":\"PIN\"}"));
+    assert(!bluetoothPrompt("{\"event\":\"prompt\",\"id\":\"1\",\"kind\":\"pin\",\"message\":"+
+        surface::jsonQuote(std::string(513,'a'))+"}"));
+
+    // Only the helper's post-info completion readback permits success. A
+    // successful pair command or a property-change notification is not enough.
+    const std::string complete=R"({"event":"complete","status":"PASS","paired":true,"trusted":true,"connected":true})";
+    assert(bluetoothCompleted(complete,true));
+    assert(bluetoothCompleted(complete,false));
+    for(const auto* flag:{"paired","trusted","connected"}) {
+        const std::string field=surface::jsonQuote(flag)+":true";
+        auto missing=complete;
+        missing.erase(missing.find(field),field.size());
+        assert(!bluetoothCompleted(missing,true));
+        auto rejected=complete;
+        rejected.replace(rejected.find(field),field.size(),surface::jsonQuote(flag)+":false");
+        assert(!bluetoothCompleted(rejected,true));
+    }
+    for(const auto* invalid:{R"({"event":"complete","status":"PASS"})",
+        R"({"event":"phase","status":"PASS","paired":true,"trusted":true,"connected":true})",
+        R"({"event":"complete","status":"FAIL","paired":true,"trusted":true,"connected":true})",
+        R"({"event":"complete","paired":true,"trusted":true,"connected":true})"}) {
+        assert(!bluetoothCompleted(invalid,true));
+        assert(!bluetoothCompleted(invalid,false));
+    }
+    assert(bluetoothCompleted(R"({"event":"complete","status":"PASS","connected":true})",false));
+    assert(!bluetoothCompleted(R"({"event":"complete","status":"PASS","paired":true,"trusted":true,"connected":false})",false));
+}
+void persistentCommandInputTests() {
+    Command command;
+    std::string error;
+    const std::string child=R"(import sys
+print('ready', flush=True)
+for expected in ('first', 'second'):
+    answer = sys.stdin.readline()
+    if answer != expected + '\n':
+        sys.exit(9)
+    print('received:' + expected, flush=True)
+)";
+    assert(command.start({"python3","-u","-c",child},5,{},error,true));
+    waitForText(command,"ready\n");
+    for(unsigned count=0;count<5;++count) {
+        assert(!command.update());
+        assert(command.running() && command.input>=0 && command.pending.empty());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    assert(!command.sendInput(std::string(4097,'x')) && command.pending.empty());
+    assert(command.sendInput("first\n"));
+    waitForText(command,"received:first\n");
+    for(unsigned count=0;count<5;++count) {
+        assert(!command.update());
+        assert(command.running() && command.input>=0 && command.pending.empty());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    assert(command.sendInput("second\n"));
+    assert(waitForExit(command)==0);
+    assert(command.text=="ready\nreceived:first\nreceived:second\n");
+    assert(!command.running() && command.input==-1 && command.output==-1 && command.pending.empty());
+    assert(!command.sendInput("after exit\n"));
+
+    // Existing one-shot command users still receive EOF after their input.
+    assert(command.start({"/bin/cat"},5,"one-shot input\n",error));
+    assert(!command.sendInput("not interactive\n"));
+    assert(waitForExit(command)==0 && command.text=="one-shot input\n");
+    assert(command.input==-1 && command.output==-1);
+
+    // An interactive process waiting for another reply remains bounded.
+    const auto timeoutStart=std::chrono::steady_clock::now();
+    assert(command.start({"/bin/cat"},0,{},error,true));
+    assert(waitForExit(command)==124);
+    assert(command.timedOut && !command.running() && command.input==-1 && command.output==-1);
+    assert(std::chrono::steady_clock::now()-timeoutStart<std::chrono::seconds(2));
+
+    assert(command.start({"python3","-u","-c",child},5,{},error,true));
+    waitForText(command,"ready\n");
+    const auto cancelledPid=command.pid;
+    assert(command.sendInput("sensitive queued response\n"));
+    const auto cancelStart=std::chrono::steady_clock::now();
+    command.cancel();
+    assert(std::chrono::steady_clock::now()-cancelStart<std::chrono::milliseconds(250));
+    assert(!command.running() && command.input==-1 && command.output==-1);
+    assert(command.pending.empty() && command.text.empty());
+    const auto reapLimit=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(!command.retired.empty() && std::chrono::steady_clock::now()<reapLimit) {
+        command.reap();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    assert(command.retired.empty());
+    assert(waitpid(cancelledPid,nullptr,WNOHANG)==-1 && errno==ECHILD);
+}
+} // namespace
 
 int main() {
+    bluetoothPairingProtocolTests();
+    persistentCommandInputTests();
     using surface::control_detail::BluetoothDevice;
     using surface::control_detail::bluetoothDevices;
     using surface::control_detail::bluetoothInfoName;
