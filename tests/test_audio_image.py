@@ -39,6 +39,8 @@ class AudioImageInventory(unittest.TestCase):
         for name in REQUIRED:
             binary=self.target/name;binary.parent.mkdir(parents=True,exist_ok=True)
             binary.write_text('# fixture executable, never executed\n');binary.chmod(0o755)
+        debugfs=self.target/'sbin/debugfs';debugfs.parent.mkdir(parents=True,exist_ok=True)
+        debugfs.write_text('# fixture executable, never executed\n');debugfs.chmod(0o755)
 
     def run_script(self):
         return subprocess.run(['/bin/sh',str(SCRIPT)],env=self.environment,capture_output=True,text=True,timeout=5)
@@ -60,6 +62,13 @@ class AudioImageInventory(unittest.TestCase):
                     self.assertFalse((self.images/'efi-part').exists())
                     if mode is None:binary.write_text('# fixture\n')
                     binary.chmod(0o755)
+
+    def test_missing_update_inspection_tool_refuses_incomplete_image(self):
+        (self.target/'sbin/debugfs').unlink()
+        result=self.run_script()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('e2fsprogs-reconfigure',result.stderr)
+        self.assertFalse((self.images/'efi-part').exists())
 
 
 if __name__=='__main__':unittest.main()

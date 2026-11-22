@@ -82,7 +82,10 @@ try:
 
     media=media_identity()
     media_fd=grow['open_readonly_target'](media)
-    try:outer=grow['read_gpt'](media_fd,media['bytes'])
+    # Live USB root/DATA GUIDs intentionally differ from the installed base.
+    # Only the serialized, read-only outer source uses the geometry reader;
+    # embedded payload and growth target keep the strict installed-GUID check.
+    try:outer=grow['read_media_gpt'](media_fd,media['bytes'])
     finally:os.close(media_fd)
     media_partition=outer['parts'][2]
     partition_node=Path('/sys/class/block/vda3')

@@ -41,13 +41,13 @@ def header(current, backup, table_lba, last, checksum):
     return value
 
 
-def fixture(path, relocated=False, extra=False):
+def fixture(path, relocated=False, extra=False, root_uuid=None, data_uuid=None):
     """Sparse regular file: no loop devices, root commands, or mounted images."""
     end = DISK_BYTES // 512 - 1 if relocated else DATA_END + 40
     parts = [
         (grow.EFI_TYPE, EFI_UUID, 2048, 133119, 4, 'boot'),
-        (grow.ROOT_TYPE, grow.ROOT_UUID, 133120, 4327423, 0, 'root'),
-        (grow.DATA_TYPE, grow.DATA_UUID, DATA_START, DATA_END, 0, 'data')]
+        (grow.ROOT_TYPE, root_uuid or grow.ROOT_UUID, 133120, 4327423, 0, 'root'),
+        (grow.DATA_TYPE, data_uuid or grow.DATA_UUID, DATA_START, DATA_END, 0, 'data')]
     if extra:
         parts.append((grow.DATA_TYPE, str(uuid.uuid4()), DATA_END + 1, DATA_END + 100, 0, 'unknown'))
         end = DATA_END + 140
@@ -132,6 +132,27 @@ class DataGrowthTests(unittest.TestCase):
         fixture(self.image, extra=True)
         with self.assertRaisesRegex(grow.Refused, 'three-partition'):
             inspect(self.image)
+
+    def test_live_media_identifiers_are_readable_but_never_a_growth_target(self):
+        root_uuid, data_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+        fixture(self.image, root_uuid=root_uuid, data_uuid=data_uuid)
+        before = self.image.stat().st_mtime_ns
+        with self.image.open('rb') as stream:
+            media = grow.read_media_gpt(stream.fileno(), DISK_BYTES)
+            self.assertEqual(media['parts'][1]['uuid'], root_uuid)
+            self.assertEqual(media['parts'][2]['uuid'], data_uuid)
+            filesystem = grow.read_ext4(stream.fileno(), media['parts'][2], pristine=True)
+            with self.assertRaisesRegex(grow.Refused, 'partition UUIDs'):
+                grow.read_gpt(stream.fileno(), DISK_BYTES)
+        with self.assertRaisesRegex(grow.Refused, 'installed root/DATA'):
+            grow.plan_grow(target(), media, filesystem)
+        self.assertEqual(self.image.stat().st_mtime_ns, before)
+        # Relaxing identity for a read-only source must not relax GPT integrity.
+        with self.image.open('r+b') as stream:
+            stream.seek(1024 + 40);stream.write(b'CORRUPT')
+        with self.image.open('rb') as stream:
+            with self.assertRaisesRegex(grow.Refused, 'CRC'):
+                grow.read_media_gpt(stream.fileno(), DISK_BYTES)
 
     def test_wrong_data_uuid_root_entry_and_moved_start_are_refused(self):
         gpt, _ = inspect(self.image)

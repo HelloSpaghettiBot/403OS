@@ -122,6 +122,14 @@ int main() {
         center.open(PanelKind::Install);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().critical && !center.view().busy);
+        select(center,"Update existing 403 OS");center.navigate(Action::Accept);
+        assert(center.view().title=="Update 403 OS - choose an installed disk");
+        assert(center.view().status.find("only inside")!=std::string::npos);
+        assert(!center.view().critical && !center.view().busy && !center.takeLaunch());
+        select(center,"Install 403 OS instead");center.navigate(Action::Accept);
+        assert(center.view().title=="Install or update 403 OS");
+        assert(center.view().status.find("only inside")!=std::string::npos);
+        assert(!center.view().critical && !center.view().busy);
         center.open(PanelKind::Library);
         select(center,"Download missing cover"); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);

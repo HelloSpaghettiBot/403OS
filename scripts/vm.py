@@ -7,6 +7,7 @@ and installed-disk boot tests use OVMF/UEFI, without direct kernel boot.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -111,6 +112,30 @@ def prepare_test_options(directory, args, disk, install=False, media=False):
     return options
 
 
+def companion_overlay(directory, source):
+    """Keep every companion-disk write in this run's disposable overlay."""
+    source = safe_file(source)
+    if not source.is_file():
+        raise ValueError('Companion must be an existing disposable virtual disk')
+    target = safe_file(directory/'companion.qcow2')
+    if target.exists():
+        raise FileExistsError('Refusing to replace companion overlay')
+    subprocess.run(['qemu-img','create','-f','qcow2','-F','qcow2','-b',str(source),str(target)],check=True)
+    return target
+
+
+def expected_boot_identity(image, mode):
+    if mode == 'test':
+        return {'root_partuuid':'8b4a530e-d6d4-4e69-9307-310000000001',
+                'data_partuuid':'8b4a530e-d6d4-4e69-9307-310000000002'}
+    spec=importlib.util.spec_from_file_location('vm_image_gpt',ROOT/'installer/prepare-usb.py')
+    reader=importlib.util.module_from_spec(spec);spec.loader.exec_module(reader)
+    with image.open('rb') as source:
+        layout=reader.read_gpt(source.fileno(),image.stat().st_size)
+    entries={part['number']:part for part in layout['entries'] if part}
+    return {'root_partuuid':entries[2]['guid'],'data_partuuid':entries[3]['guid']}
+
+
 def record_proton_result(summary, log, requested):
     accepted = bool(re.search(r"^SURFACE_PROTON_REQUEST requested=True(?:\s|$)", log, re.M))
     passed = bool(re.search(r"^SURFACE_PROTON_PASS(?:\s|$)", log, re.M))
@@ -200,29 +225,43 @@ class VM:
                         "-device", "virtio-blk-pci,drive=installtarget,serial=SURFACE_TEST_TARGET",
                         "-kernel", str(ROOT / "output/images/bzImage"),
                         "-append", "root=/dev/vda2 rootwait ro console=ttyS0,115200 surface.vm-install=1"]
+        elif getattr(args,'usb_storage',False):
+            command += ['-drive',f'file={safe_file(disk)},if=none,id=primary,format=qcow2,discard=unmap,detect-zeroes=unmap',
+                        '-device','usb-storage,drive=primary,bus=xhci.0,bootindex=1,serial=SURFACE_PRIMARY']
         elif args.sata:
             command += ["-drive", f"file={safe_file(disk)},if=none,id=installed,format=qcow2,discard=unmap,detect-zeroes=unmap",
-                        "-device", "ide-hd,drive=installed,bus=ide.0"]
+                        "-device", "ide-hd,drive=installed,bus=ide.0,bootindex=1"]
         else:
             command += ["-drive", f"file={safe_file(disk)},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap"]
-        # No installation media at all in installed-disk tests.
+        companion=getattr(args,'companion_disk',None)
+        if companion:
+            secondary=companion_overlay(directory,companion)
+            command += ['-drive',f'file={secondary},if=none,id=companion,format=qcow2,discard=unmap,detect-zeroes=unmap']
+            command += ['-device','ide-hd,drive=companion,bus=ide.0,bootindex=2,serial=SURFACE_COMPANION'] if getattr(args,'usb_storage',False) else [
+                '-device','usb-storage,drive=companion,bus=xhci.0,bootindex=2,serial=SURFACE_COMPANION']
         (directory / "command.json").write_text(json.dumps(command, indent=2))
         self.stderr = open(directory / "qemu.log", "wb")
         self.process = subprocess.Popen(command, stdout=self.stderr, stderr=self.stderr)
         self.metadata = {"accelerator": accelerator, "memory_mib": memory,
                          "vcpus": cpus, "installer_attached": install or media,
                          "direct_kernel_boot": install, "sata": args.sata,
+                         "usb_storage":bool(getattr(args,'usb_storage',False)), "companion_attached":bool(companion),
                          "proton_requested": bool(getattr(args, "test_proton", False))}
 
     def wait_for(self, token, timeout=180, after=0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             data = self.log.read_text(errors="replace") if self.log.exists() else ""
+            if 'SURFACE_DATA_MOUNT_FAIL' in data:
+                raise RuntimeError(f'Boot DATA mount failed; see {self.directory}/serial.log')
             if token in data[after:]:
                 return data
             if token.startswith('SURFACE_INSTALL_UI_') and 'SURFACE_INSTALL_UI_FAILURE' in data[after:]:
                 self.screenshot('installer-failed.png')
                 raise RuntimeError(f'Installer reported failure; see {self.directory}/installer-failed.png')
+            if token.startswith('SURFACE_UPDATE_UI_') and 'SURFACE_UPDATE_UI_FAILURE' in data[after:]:
+                self.screenshot('update-failed.png')
+                raise RuntimeError(f'Updater reported failure; see {self.directory}/update-failed.png')
             if self.process.poll() is not None:
                 raise RuntimeError(f"QEMU exited ({self.process.returncode}) before {token}; see {self.directory}")
             time.sleep(0.2)
@@ -531,6 +570,150 @@ def exercise_install_ui(vm):
     return str(vm.directory/'ui-install-target.qcow2')
 
 
+def exercise_update_ui(vm):
+    """Update only the disposable companion; the original fixture is preserved."""
+    target=vm.directory/'companion.qcow2'
+    if not target.is_file():
+        raise RuntimeError('Update acceptance requires its disposable companion overlay')
+    start=len(vm.log.read_text(errors='replace'))
+    # The status overlay opens Settings through the production controller
+    # path, independent of tablet coordinates after a rotation test.
+    vm.key('tab');vm.key('ret');time.sleep(1)
+    for _ in range(10):vm.key('down')
+    vm.key('ret')
+    listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
+    match=re.search(r'SURFACE_INSTALL_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
+    if not match or int(match[1])<1 or int(match[2])!=1:
+        raise RuntimeError('Update acceptance requires exactly one eligible companion and a valid source')
+    start=len(vm.log.read_text(errors='replace'));vm.key('down');vm.key('ret')
+    vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
+    vm.screenshot('update-disks.png')
+    start=len(vm.log.read_text(errors='replace'));vm.key('ret')
+    reviewed=vm.wait_for('SURFACE_UPDATE_UI_REVIEW target=',60,after=start)
+    identity=re.search(r'SURFACE_UPDATE_UI_REVIEW target=([^\r\n]+) cancel_selected=1',reviewed[start:])
+    if not identity or not identity[1].endswith('SURFACE_COMPANION'):
+        raise RuntimeError('Update review did not default to Cancel for the serialized disposable companion')
+    vm.screenshot('update-review.png')
+    start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
+    vm.wait_for('SURFACE_UPDATE_UI_COMPLETE data_preserved=1',1200,after=start)
+    vm.screenshot('update-complete.png')
+    vm.key('up');vm.key('ret');vm.key('up');vm.key('ret');vm.process.wait(timeout=45)
+    if vm.process.returncode!=0:raise RuntimeError('GUI updater did not power off cleanly')
+    return str(target)
+
+
+class ReadOnlyVirtualDisk:
+    """Read actual image bytes over a private socket, without kernel devices.
+
+    Fixed-newstyle NBD, EXPORT_NAME, simple replies only. The server is always
+    read-only. Allocation metadata is never treated as evidence of byte equality.
+    https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md
+    """
+    def __init__(self, path, fmt, directory, label):
+        self.path=safe_file(path) if fmt=='qcow2' else Path(path).resolve(strict=True)
+        if fmt not in ('raw','qcow2') or not self.path.is_file() or Path(path).is_symlink():
+            raise ValueError('An ordinary virtual image is required')
+        if fmt=='raw' and self.path!=ROOT/'output/images/surface-go-base.img':
+            raise ValueError('Only the compiled base is a raw comparison source')
+        if label not in ('old','new','base','fixture'):raise ValueError('Invalid private socket label')
+        self.fmt=fmt;self.directory=directory;self.label=label
+        self.address=Path(os.environ['XDG_RUNTIME_DIR'])/f'sgo-nbd-{os.getpid()}-{label}.sock'
+        self.connection=None;self.process=None;self.errors=None;self.handle=0
+
+    def receive(self, count):
+        output=bytearray()
+        while len(output)<count:
+            data=self.connection.recv(count-len(output))
+            if not data:raise RuntimeError('Virtual disk reader disconnected')
+            output.extend(data)
+        return bytes(output)
+
+    def __enter__(self):
+        if self.address.exists():raise FileExistsError('Private disk-reader socket already exists')
+        self.errors=(self.directory/('nbd-'+self.label+'.log')).open('wb')
+        try:
+            self.process=subprocess.Popen(['qemu-nbd','--read-only','--format='+self.fmt,
+                '--socket='+str(self.address),str(self.path)],stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,stderr=self.errors,umask=0o077)
+            deadline=time.monotonic()+15
+            while not self.address.exists():
+                if self.process.poll() is not None or time.monotonic()>deadline:
+                    raise RuntimeError('Read-only virtual disk server did not start')
+                time.sleep(.05)
+            self.connection=socket.socket(socket.AF_UNIX);self.connection.settimeout(60)
+            self.connection.connect(str(self.address))
+            magic,option,flags=struct.unpack('>QQH',self.receive(18))
+            if magic!=0x4e42444d41474943 or option!=0x49484156454f5054 or not flags&1:
+                raise RuntimeError('Unexpected virtual disk handshake')
+            self.connection.sendall(struct.pack('>I',3 if flags&2 else 1))
+            self.connection.sendall(struct.pack('>QII',option,1,0))
+            self.size,transmission=struct.unpack('>QH',self.receive(10))
+            if not flags&2:self.receive(124)
+            if not transmission&2 or not 0<self.size<=1024**4:
+                raise RuntimeError('Virtual export is not bounded and read-only')
+            return self
+        except BaseException:
+            self.__exit__(None,None,None);raise
+
+    def read(self, offset, count):
+        if offset<0 or not 0<count<=8*1024**2 or offset+count>self.size:
+            raise ValueError('Virtual disk read exceeds its bounds')
+        self.handle+=1
+        self.connection.sendall(struct.pack('>IHHQQI',0x25609513,0,0,self.handle,offset,count))
+        magic,error,handle=struct.unpack('>IIQ',self.receive(16))
+        if magic!=0x67446698 or error or handle!=self.handle:
+            raise RuntimeError('Virtual disk read failed or returned the wrong request')
+        return self.receive(count)
+
+    def __exit__(self,*unused):
+        if self.connection is not None:
+            try:self.connection.sendall(struct.pack('>IHHQQI',0x25609513,0,2,0,0,0))
+            except OSError:pass
+            self.connection.close();self.connection=None
+        if self.process is not None:
+            try:self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                try:self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:self.process.kill();self.process.wait()
+        if self.errors is not None:self.errors.close()
+        self.address.unlink(missing_ok=True)
+
+
+def verify_updated_disk(directory, original, updated, base):
+    """Compare every preserved byte and both new system partitions offline."""
+    original,updated=safe_file(original),safe_file(updated)
+    if not base.is_file() or base.is_symlink():
+        raise ValueError('The compiled pristine image must be an ordinary file')
+    spec=importlib.util.spec_from_file_location('vm_update_gpt',ROOT/'installer/prepare-usb.py')
+    reader=importlib.util.module_from_spec(spec);spec.loader.exec_module(reader)
+    with base.open('rb') as source:
+        entries={part['number']:part for part in reader.read_gpt(source.fileno(),base.stat().st_size)['entries'] if part}
+    boot=entries[1]['start']*512;data=entries[3]['start']*512
+    results={}
+    with ReadOnlyVirtualDisk(original,'qcow2',directory,'old') as old, \
+         ReadOnlyVirtualDisk(updated,'qcow2',directory,'new') as new, \
+         ReadOnlyVirtualDisk(base,'raw',directory,'base') as pristine:
+        if old.size!=new.size:raise RuntimeError('Updated virtual disk capacity changed')
+        for name,right,offset,length in (
+                ('unchanged_gpt_prefix',old,0,boot),
+                ('unchanged_entire_data_and_backup_gpt',old,data,new.size-data),
+                ('updated_efi_and_root_match_payload',pristine,boot,data-boot)):
+            digest=hashlib.sha256()
+            for position in range(offset,offset+length,8*1024**2):
+                count=min(8*1024**2,offset+length-position)
+                expected=right.read(position,count);actual=new.read(position,count)
+                if actual!=expected:
+                    raise RuntimeError(f'Actual virtual-disk bytes differ in {name} at {position}')
+                digest.update(actual)
+            results[name]={'status':'PASS','bytes':length,'offset':offset,'sha256':digest.hexdigest(),
+                           'method':'complete-read-only-virtual-disk-byte-comparison'}
+            (directory/(name+'.log')).write_text(json.dumps(results[name],indent=2)+'\n')
+            print('Offline update verification PASS:',name,length,'bytes',flush=True)
+    (directory/'update-byte-comparison.json').write_text(json.dumps(results,indent=2)+'\n')
+    return results
+
+
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["live", "install", "test"])
@@ -544,11 +727,14 @@ def parse_arguments(argv=None):
     parser.add_argument('--expect-existing-profile',action='store_true',help='Require installed login with the existing fixture password instead of enrolling again')
     parser.add_argument('--test-rotation',action='store_true',help='Require actual live Weston rotation with preserved browser/compositor processes')
     parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
+    parser.add_argument('--test-update-ui',action='store_true',help='Update only the disposable overlay of an explicitly supplied installed companion')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
     parser.add_argument("--cpus", type=int, choices=[2, 4], default=4)
     parser.add_argument("--width", type=int, choices=[1280, 1800], default=1800)
     parser.add_argument("--height", type=int, choices=[800, 1200], default=1200)
     parser.add_argument("--sata", action="store_true")
+    parser.add_argument('--usb-storage',action='store_true',help='UEFI boot the primary disk through the emulated USB controller')
+    parser.add_argument('--companion-disk',type=Path,help='Attach a disposable overlay of this other VM disk to check boot selection')
     parser.add_argument("--visible", action="store_true")
     parser.add_argument("--keep-open", action="store_true",
                         help="Keep the visible VM open after boot checks for interactive use")
@@ -558,6 +744,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--catalog", type=Path,default=ROOT / "artifacts/library/catalog.tsv")
     parser.add_argument("--ovmf", default="/usr/share/edk2/ovmf/OVMF_CODE.fd")
     args = parser.parse_args(argv)
+    if args.usb_storage and args.sata or (args.usb_storage or args.companion_disk) and args.mode=='install':
+        parser.error('USB/companion testing requires a live or test boot and one primary disk bus')
     if args.keep_open and (not args.visible or args.mode == "install"):
         parser.error("--keep-open requires --visible and a live or test boot")
     if args.test_proton and (args.mode != "test" or args.disk is None):
@@ -574,6 +762,8 @@ def parse_arguments(argv=None):
         parser.error('--test-rotation requires a live or installed graphical boot')
     if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
         parser.error('--test-install-ui requires a disposable live acceptance run')
+    if args.test_update_ui and (args.mode!='live' or not args.companion_disk or not args.usb_storage or args.test_install_ui or args.keep_open or args.test_display or args.test_profiles):
+        parser.error('--test-update-ui requires a USB live boot with an explicit installed companion and no other destructive/UI test')
     if not 0<=args.expect_library_games<=100000 or args.expect_library_games and args.mode=='install':
         parser.error('--expect-library-games requires a live/installed boot and a bounded nonnegative count')
     return args
@@ -640,6 +830,13 @@ def main():
             if " / ext4 " not in mounts or " /data ext4 " not in mounts:
                 raise RuntimeError("Root or separate data filesystem not mounted")
             summary["checks"]["root_and_persistent_data_mount"] = "PASS"
+            if args.usb_storage or args.companion_disk:
+                identity=serial_json(vm,'SURFACE_BOOT_IDENTITY ')
+                expected=expected_boot_identity(image,args.mode)
+                if any(identity.get(key)!=value for key,value in expected.items()):
+                    raise RuntimeError('UEFI boot selected another disk root or DATA partition')
+                summary['boot_identity']=identity
+                summary['checks']['selected_disk_root_and_data']='PASS'
             match = re.search(r"SURFACE_DATA_BOOT_COUNT=(\d+)", mounts)
             if not match:
                 raise RuntimeError("Persistent data boot counter missing")
@@ -730,7 +927,17 @@ def main():
                 summary['display_settings_test']=exercise_display(vm,args.width,args.height)
                 summary['checks']['display_apply_confirm_timeout_rollback']='PASS'
             if args.test_profiles:exercise_profiles(vm,summary,create=args.create_test_profile)
-            if args.test_install_ui:
+            if args.test_update_ui:
+                summary['ui_updated_disk']=exercise_update_ui(vm)
+                summary['update_byte_comparison']=verify_updated_disk(directory,args.companion_disk,
+                    Path(summary['ui_updated_disk']),base)
+                summary['checks']['click_updater_backup_readback_data_preserved']='PASS'
+                summary['checks']['offline_all_data_and_gpt_bytes_unchanged']='PASS'
+                summary['checks']['ui_clean_poweroff']='PASS'
+                summary['audio_capture']=inspect_audio_capture(directory/'audio.wav')
+                require_audio_evidence(summary['audio_capture'],'SURFACE_AUDIO_PASS' in vm.log.read_text(errors='replace'))
+                summary['checks']['audio_playback']='PASS'
+            elif args.test_install_ui:
                 # Publishable screenshot uses the original system artwork,
                 # without displaying private games or commercial cover art.
                 if args.expect_library_games and not args.test_profiles:

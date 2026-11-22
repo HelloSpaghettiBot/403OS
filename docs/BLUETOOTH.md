@@ -6,6 +6,22 @@ pairings are retained across shutdown and installation. Bluetooth-only
 software radio blocks are cleared when you explicitly start a scan;
 hardware radio blocks remain under the device's control.
 
+## Start the updated image
+
+When testing from USB, select USB startup in the Surface firmware. An older
+installed copy can still show its previous Bluetooth driver behavior when
+the firmware starts that copy. See
+[Surface firmware and USB boot](INSTALL_RECOVERY.md#surface-firmware-and-usb-boot)
+for the Volume Down and Power sequence and the Secure Boot setting required
+by this unsigned build.
+
+Newly packaged USBs use separate root and DATA partition identifiers from
+installed systems, with a matching EFI root selector. Startup also mounts
+DATA from the running system's own disk. These corrections prevent an
+updated USB from selecting an older installed root or its saved settings.
+Physical adapter detection and controller pairing still require testing on
+the Surface.
+
 ## Adapter detection correction
 
 The November 21 update changes the USB Bluetooth transport from a built-in

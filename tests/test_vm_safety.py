@@ -13,6 +13,32 @@ spec.loader.exec_module(vm)
 
 
 class DiskSafetyTests(unittest.TestCase):
+    def test_companion_disk_is_always_an_ordinary_disposable_overlay(self):
+        for source in (Path('/dev/sda'),Path('/tmp/other.qcow2')):
+            with self.assertRaises(ValueError):
+                vm.companion_overlay(vm.ARTIFACTS/'unit-test',source)
+        directory=vm.ARTIFACTS/'unit-test';directory.mkdir(exist_ok=True)
+        source=directory/'companion-source.qcow2';source.write_bytes(b'preserved')
+        target=directory/'companion.qcow2'
+        try:
+            with patch.object(vm.subprocess,'run') as command:
+                self.assertEqual(vm.companion_overlay(directory,source),target)
+                self.assertIn('-b',command.call_args.args[0])
+                self.assertEqual(command.call_args.args[0][-2:], [str(source),str(target)])
+            self.assertEqual(source.read_bytes(),b'preserved')
+        finally:source.unlink()
+
+    def test_dual_disk_bus_options_reject_direct_kernel_install(self):
+        for arguments in (['install','--usb-storage'],['install','--companion-disk','/dev/sda'],['live','--sata','--usb-storage']):
+            with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):vm.parse_arguments(arguments)
+
+    def test_update_acceptance_requires_a_disposable_explicit_companion(self):
+        for arguments in (['live','--test-update-ui'],['test','--test-update-ui'],
+                          ['live','--test-update-ui','--companion-disk','test.qcow2'],
+                          ['live','--test-update-ui','--usb-storage','--companion-disk','test.qcow2','--test-install-ui']):
+            with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):vm.parse_arguments(arguments)
+        self.assertTrue(vm.parse_arguments(['live','--test-update-ui','--usb-storage','--companion-disk',str(vm.ARTIFACTS/'fixture.qcow2')]).test_update_ui)
+
     def test_existing_password_check_requires_an_installed_disk(self):
         for arguments in (['live','--expect-existing-profile'],['test','--expect-existing-profile']):
             with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):

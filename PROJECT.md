@@ -59,6 +59,15 @@ Each requires review of the actual target; no unattended real-device erase is
 permitted. Live-test before internal installation, and document backup,
 recovery and reinstall procedures. A normal image flash is not secure erasure.
 
+An offline update boots from newer live USB media and updates an existing,
+unmounted internal 403 OS disk with compatible EFI/root partition geometry.
+It verifies the source, saves and reads back the old EFI/root on live DATA,
+then replaces and verifies only those two system partitions. Expected partition
+hashes are bound to the initial whole-source checksum. Installed DATA and GPT
+remain untouched. Updates have a separate Cancel-default review and explicit
+target confirmation. Recovery from a retained verified system backup is an
+explicit administrator action; this is not an atomic A/B or network updater.
+
 ## Engineering and acceptance
 
 Use pinned upstream sources, hashes and licenses, a Buildroot br2-external

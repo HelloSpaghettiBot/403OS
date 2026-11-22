@@ -1,5 +1,5 @@
 Method: Built-in image_gen.imagegen, opaque original generation, 2026-11-19.
-No reference image was passed to the tool; the owner's interface screenshot informed the written direction. Original output preserved at /home/Luls/.codex/generated_images/01a1f6bd-e15a-76f3-bcd2-dd43d88d0e56/exec-c6b99c66-f7aa-4eeb-bf13-47cadfd41dba.png
+No reference image was passed to the tool. The design brief guided the original artwork preserved as mountain-dusk.png.
 
 Final prompt:
 Use case: photorealistic-natural

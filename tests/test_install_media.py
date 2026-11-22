@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,10 +61,15 @@ class InstallerMediaTests(unittest.TestCase):
     def test_config_points_only_to_generated_data_and_base_config_is_empty(self):
         template = ROOT/'external/board/surface-go1/genimage-usb.cfg'
         rendered = self.directory/'usb.cfg'
-        media.render_config(template,rendered,self.directory/'data-root')
+        boot = dict(root_uuid=str(uuid.uuid4()),data_uuid=str(uuid.uuid4()),efi_image=str(self.directory/'efi-usb.vfat'))
+        media.render_config(template,rendered,self.directory/'data-root',boot)
         text=rendered.read_text()
         self.assertIn('srcpath = "'+str(self.directory/'data-root')+'"',text)
         self.assertNotIn('@INSTALLER_DATA_ROOT@',text)
+        self.assertIn('partition-uuid = '+boot['root_uuid'],text)
+        self.assertIn('partition-uuid = '+boot['data_uuid'],text)
+        self.assertNotIn(media.BASE_ROOT_UUID,text)
+        self.assertNotIn(media.BASE_DATA_UUID,text)
         base = (ROOT/'external/board/surface-go1/genimage.cfg').read_text()
         self.assertIn('image surface-go-base.img {',base)
         self.assertIn('empty = true',base)
@@ -71,7 +77,34 @@ class InstallerMediaTests(unittest.TestCase):
         bad = self.directory/'bad-template'
         bad.write_text('no data root')
         with self.assertRaisesRegex(RuntimeError,'exactly one'):
-            media.render_config(bad,rendered,self.directory/'data-root')
+            media.render_config(bad,rendered,self.directory/'data-root',boot)
+
+    def test_live_efi_and_gpt_share_fresh_ids_without_changing_base(self):
+        images=self.directory/'images';images.mkdir()
+        folder=images/'efi-part/EFI/BOOT';folder.mkdir(parents=True)
+        original='linux /bzImage root=PARTUUID='+media.BASE_ROOT_UUID+' rootwait rw\n'
+        (folder/'grub.cfg').write_text(original)
+        (images/'efi.vfat').write_bytes(b'original base ESP')
+        first=self.directory/'first';first.mkdir()
+        second=self.directory/'second';second.mkdir()
+        def run(command, **kwargs):
+            if command[0].endswith('mtype'):
+                return subprocess.CompletedProcess(command,0,stdout=(Path(command[2]).parent/'grub-live.cfg').read_text())
+            return subprocess.CompletedProcess(command,0)
+        with mock.patch.object(media.subprocess,'run',side_effect=run):
+            one=media.prepare_live_boot(images,first,HOST/'bin')
+            two=media.prepare_live_boot(images,second,HOST/'bin')
+        self.assertEqual(len({one['root_uuid'],one['data_uuid'],two['root_uuid'],two['data_uuid'],media.BASE_ROOT_UUID,media.BASE_DATA_UUID}),6)
+        for boot, workspace in ((one,first),(two,second)):
+            config=(workspace/'grub-live.cfg').read_text()
+            self.assertIn('root=PARTUUID='+boot['root_uuid']+' surface.boot=live',config)
+            self.assertNotIn(media.BASE_ROOT_UUID,config)
+            self.assertEqual((workspace/'efi-usb.vfat').read_bytes(),b'original base ESP')
+        self.assertEqual((folder/'grub.cfg').read_text(),original)
+        self.assertEqual((images/'efi.vfat').read_bytes(),b'original base ESP')
+        (folder/'grub.cfg').write_text('linux /bzImage root=/dev/sda2')
+        with self.assertRaisesRegex(RuntimeError,'exactly one'):
+            media.prepare_live_boot(images,first,HOST/'bin')
 
     def test_pristine_guard_rejects_nested_payload_or_private_data(self):
         for name in ('SurfaceGoGamingOS','home','tailscale'):
@@ -79,6 +112,23 @@ class InstallerMediaTests(unittest.TestCase):
             with mock.patch.object(media,'regular'),mock.patch.object(media,'debugfs',return_value=listing):
                 with self.assertRaisesRegex(RuntimeError,'pristine'):
                     media.verify_pristine_data(Path('/unused'),Path('/unused'))
+
+    @unittest.skipUnless(all((HOST/path).is_file() for path in ('bin/mcopy','bin/mtype','sbin/mkfs.vfat')),
+                         'Pinned FAT tools unavailable')
+    def test_real_efi_copy_selects_live_root_and_preserves_installed_efi(self):
+        images=self.directory/'images';images.mkdir()
+        config=images/'efi-part/EFI/BOOT/grub.cfg';config.parent.mkdir(parents=True)
+        config.write_text('linux /bzImage root=PARTUUID='+media.BASE_ROOT_UUID+' rootwait rw\n')
+        fat=images/'efi.vfat'
+        with fat.open('wb') as stream:stream.truncate(16*1024**2)
+        subprocess.run([str(HOST/'sbin/mkfs.vfat'),str(fat)],check=True,capture_output=True)
+        subprocess.run([str(HOST/'bin/mcopy'),'-i',str(fat),'-s',str(images/'efi-part/EFI'),'::/'],check=True,capture_output=True)
+        before=media.digest(fat)
+        workspace=self.directory/'boot';workspace.mkdir()
+        boot=media.prepare_live_boot(images,workspace,HOST/'bin')
+        actual=subprocess.check_output([str(HOST/'bin/mtype'),'-i',boot['efi_image'],'::/EFI/BOOT/grub.cfg'],text=True)
+        self.assertIn('root=PARTUUID='+boot['root_uuid']+' surface.boot=live',actual)
+        self.assertEqual(media.digest(fat),before)
 
     @unittest.skipUnless(all((HOST/path).is_file() for path in ('bin/fakeroot','sbin/mke2fs','sbin/debugfs')),
                          'Pinned Buildroot filesystem tools unavailable')

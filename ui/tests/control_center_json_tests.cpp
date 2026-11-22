@@ -74,5 +74,68 @@ int main() {
     assert(surface::control_detail::installProgress("{\"phase\":\"verify-target\",\"percent\":75}").find("Step 3 of 6")!=std::string::npos);
     assert(surface::control_detail::installProgress("{\"phase\":\"resize-unmounted-data-filesystem\"}").find("Step 4 of 6")!=std::string::npos);
     assert(surface::control_detail::installProgress("{\"phase\":\"copy-image\",\"percent\":999}").find("100%")!=std::string::npos);
+
+    using surface::control_detail::UpdateReview;
+    const auto updatePlan=[&](const std::string& id,const std::string& path,const std::string& hash,
+                              const std::string& token,bool preserve,std::uint64_t bytes) {
+        return "{\"event\":\"plan\",\"operation\":\"update\",\"confirmation\":\"UPDATE "+id+"\",\"target\":\""+path+"\",\"target_id\":\""+id+
+            "\",\"target_bytes\":"+std::to_string(bytes)+",\"source\":"+surface::jsonQuote(source.path)+
+            ",\"source_sha256\":\""+hash+"\",\"source_bytes\":"+std::to_string(source.bytes)+",\"review_token\":\""+token+"\",\"data_preserved\":"+(preserve?"true":"false")+
+            ",\"automatic_restart\":false,\"backup_bytes\":2214592512,\"backup_required_bytes\":2751463424,"
+            "\"partitions\":[{\"number\":1,\"name\":\"boot\",\"offset\":1048576,\"bytes\":67108864},{\"number\":2,\"name\":\"root\",\"offset\":68157440,\"bytes\":2147483648}]}";
+    };
+    const auto token=std::string(64,'c');
+    const auto validUpdate=updatePlan(target.id,target.path,source.hash,token,true,target.bytes);
+    const auto updateReview=UpdateReview::fromPlan(validUpdate,source,target);
+    assert(updateReview && updateReview->rows().size()==7);
+    assert(updateReview->rows()[UpdateReview::Cancel]=="Cancel");
+    for(std::size_t row=0;row<updateReview->rows().size();++row)
+        if(row!=UpdateReview::Update) assert(updateReview->executeArguments(row).empty());
+    assert((updateReview->executeArguments(UpdateReview::Update)==std::vector<std::string>{
+        "surface-update-device","--execute","--target",target.path,"--source",source.path,
+        "--expected-target-id",target.id,"--expected-source-sha256",source.hash,
+        "--review-token",token,"--confirm","UPDATE "+target.id}));
+    // An update cannot reuse an erase review, switch devices or omit its
+    // preservation/recovery plan. Both operations keep shell text literal.
+    for(const auto& invalid:{validPlan,updatePlan("changed",target.path,source.hash,token,true,target.bytes),
+        updatePlan(target.id,"/dev/changed",source.hash,token,true,target.bytes),
+        updatePlan(target.id,target.path,std::string(64,'b'),token,true,target.bytes),
+        updatePlan(target.id,target.path,source.hash,"",true,target.bytes),
+        updatePlan(target.id,target.path,source.hash,token,false,target.bytes),
+        updatePlan(target.id,target.path,source.hash,token,true,target.bytes-512)})
+        assert(!UpdateReview::fromPlan(invalid,source,target));
+    for(const auto& replacement:std::vector<std::pair<std::string,std::string>>{
+        {"\"operation\":\"update\"","\"operation\":\"restore\""},
+        {"\"source_bytes\":6510628864","\"source_bytes\":6510629376"},
+        {"\"automatic_restart\":false","\"automatic_restart\":true"},
+        {"\"backup_required_bytes\":2751463424","\"backup_required_bytes\":0"},
+        {"\"backup_bytes\":2214592512","\"backup_bytes\":0"},
+        {"\"number\":2,\"name\":\"root\"","\"number\":3,\"name\":\"data\""},
+        {"\"offset\":68157440","\"offset\":2215636992"},
+        {"\"bytes\":2147483648","\"bytes\":2147483647"}}) {
+        auto invalid=validUpdate;const auto at=invalid.find(replacement.first);assert(at!=std::string::npos);
+        invalid.replace(at,replacement.first.size(),replacement.second);
+        assert(!UpdateReview::fromPlan(invalid,source,target));
+    }
+    const auto complete="{\"event\":\"complete\",\"operation\":\"update\",\"verified\":true,\"data_untouched\":true,"
+        "\"gpt_unchanged\":true,\"target\":"+surface::jsonQuote(target.path)+",\"target_id\":"+surface::jsonQuote(target.id)+
+        ",\"source_sha256\":"+surface::jsonQuote(source.hash)+",\"backup\":\"/data/updates/update-fixture\"}";
+    assert(updateReview->completed("{\"event\":\"progress\",\"phase\":\"write-system\",\"percent\":100}\n"+complete));
+    assert(!updateReview->completed("{\"event\":\"progress\",\"phase\":\"write-system\",\"percent\":100}"));
+    assert(!updateReview->completed(complete+"\n{\"event\":\"error\",\"message\":\"verification failed\"}"));
+    for(const auto& replacement:std::vector<std::pair<std::string,std::string>>{
+        {"\"verified\":true","\"verified\":false"},
+        {"\"data_untouched\":true","\"data_untouched\":false"},
+        {"\"gpt_unchanged\":true","\"gpt_unchanged\":false"},
+        {target.path,"/dev/changed"},{target.id,"changed"},{source.hash,std::string(64,'b')},
+        {"/data/updates/update-fixture","relative-backup"}}) {
+        auto invalid=complete;const auto at=invalid.find(replacement.first);assert(at!=std::string::npos);
+        invalid.replace(at,replacement.first.size(),replacement.second);
+        assert(!updateReview->completed(invalid));
+    }
+    assert(surface::control_detail::updateProgress("{\"phase\":\"backup-system\",\"percent\":37}").find("Backing up the current system - 37%")!=std::string::npos);
+    assert(surface::control_detail::updateProgress("{\"phase\":\"verify-backup\",\"percent\":100}").find("Verifying the recovery copy - 100%")!=std::string::npos);
+    assert(surface::control_detail::updateProgress("{\"phase\":\"write-system\",\"percent\":42}\n{\"phase\":").find("Updating 403 OS - 42%")!=std::string::npos);
+    assert(surface::control_detail::updateProgress("{\"phase\":\"verify-system\",\"percent\":999}").find("Verifying the updated system - 100%")!=std::string::npos);
     std::cout<<"Command JSON parsing, reviewed installer buttons, literal confirmation, changed-device refusal, and progress tests pass\n";
 }

@@ -87,9 +87,18 @@ def record(event,**values):
             def read_gpt(descriptor,size):
                 record('gpt-check',bytes=size)
                 assert stat.S_ISREG(os.fstat(descriptor).st_mode)
-                if config()['scenario']=='bad-payload-gpt' and os.readlink('/proc/self/fd/'+str(descriptor))==config()['source']:
+                assert os.readlink('/proc/self/fd/'+str(descriptor))==config()['source']
+                if config()['scenario']=='bad-payload-gpt':
                     raise ValueError('Invalid packaged GPT fixture')
                 return dict(parts=[{},{},dict(first=100,bytes=4194304)])
+            def read_media_gpt(descriptor,size):
+                record('live-media-gpt-check',bytes=size)
+                assert stat.S_ISREG(os.fstat(descriptor).st_mode)
+                assert os.readlink('/proc/self/fd/'+str(descriptor))==config()['media']
+                if config()['scenario']=='bad-live-media-gpt':
+                    raise ValueError('Invalid live media GPT fixture')
+                return dict(parts=[{},dict(uuid='55555555-5555-4555-8555-555555555551'),
+                    dict(first=100,bytes=4194304,uuid='55555555-5555-4555-8555-555555555552')])
             def read_ext4(descriptor,partition,pristine=False):
                 record('pristine-check',pristine=pristine)
                 assert pristine is True
@@ -233,6 +242,20 @@ def record(event,**values):
                 self.assertNotIn('SURFACE_VM_INSTALL_PASS',value.stdout)
                 self.assertFalse(self.mountinfo.read_text())
                 self.source.write_bytes(content);self.sidecar.write_text(manifest)
+
+    def test_live_source_uses_separate_geometry_check_and_invalid_gpt_never_clones(self):
+        value, calls = self.run_case()
+        self.assertEqual(value.returncode, 0, value.stdout + value.stderr)
+        events = [call['event'] for call in calls]
+        self.assertEqual(events.count('live-media-gpt-check'), 1)
+        self.assertEqual(events.count('gpt-check'), 1)
+        self.assertLess(events.index('live-media-gpt-check'), events.index('gpt-check'))
+        self.log.unlink()
+        sentinel = self.target.read_bytes()
+        value, calls = self.run_case('bad-live-media-gpt')
+        self.assertEqual(value.returncode, 2, value.stdout + value.stderr)
+        self.assertNotIn('dd', [call['event'] for call in calls])
+        self.assertEqual(self.target.read_bytes(), sentinel)
 
     def test_equal_logical_media_and_embedded_image_sizes_are_valid(self):
         # Sparse inner/outer images have identical logical geometry even though

@@ -208,8 +208,12 @@ def checked_header(header, expected_current, disk_sectors):
                 count=count, entry_size=entry_size, table_crc=table_crc)
 
 
-def read_gpt(descriptor, disk_bytes):
-    """Validate both GPT copies, even before the old backup is relocated."""
+def read_media_gpt(descriptor, disk_bytes):
+    """Read the reviewed image geometry without assuming installed GUIDs.
+
+    The read-only VM installer uses this for its separately identified live
+    source. Target planning and mutation must use read_gpt's installed check.
+    """
     if disk_bytes % SECTOR or disk_bytes < 1024 * 1024:
         raise Refused('Invalid sector-aligned disk size')
     sectors = disk_bytes // SECTOR
@@ -265,11 +269,17 @@ def read_gpt(descriptor, disk_bytes):
             raise Refused('Unknown EFI/root/DATA partition type, size, name or attributes')
     if parts[0]['first'] != 2048 or parts[1]['first'] != parts[0]['last'] + 1 or parts[2]['first'] != parts[1]['last'] + 1:
         raise Refused('Installed image partition starts differ from the reviewed layout')
-    if parts[1]['uuid'] != ROOT_UUID or parts[2]['uuid'] != DATA_UUID:
-        raise Refused('Surface root/DATA partition UUIDs do not match')
     return dict(primary=primary, disk_guid=str(uuid.UUID(bytes_le=primary_raw[56:72])),
                 table=table, primary_raw=primary_raw, backup_raw=backup_raw, mbr=mbr,
                 parts=parts, fingerprint=hashlib.sha256(mbr + primary_raw + table + backup_raw).hexdigest())
+
+
+def read_gpt(descriptor, disk_bytes):
+    """Validate both GPT copies and the exact installed root/DATA GUIDs."""
+    result = read_media_gpt(descriptor, disk_bytes)
+    if result['parts'][1]['uuid'] != ROOT_UUID or result['parts'][2]['uuid'] != DATA_UUID:
+        raise Refused('Surface root/DATA partition UUIDs do not match')
+    return result
 
 
 def read_ext4(descriptor, partition, pristine=False):
@@ -298,6 +308,8 @@ def read_ext4(descriptor, partition, pristine=False):
 
 def plan_grow(target, gpt, filesystem):
     data = gpt['parts'][2]
+    if gpt['parts'][1]['uuid'] != ROOT_UUID or data['uuid'] != DATA_UUID:
+        raise Refused('Growth requires the installed root/DATA partition UUIDs')
     if data['bytes'] != ORIGINAL_DATA_BYTES or filesystem['bytes'] != ORIGINAL_DATA_BYTES or filesystem['mount_time'] or filesystem['mount_count']:
         raise Refused('Growth is restricted to the original freshly cloned 4 GiB DATA partition')
     final_last = target['bytes'] // SECTOR - 34

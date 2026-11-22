@@ -10,14 +10,18 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
+import uuid
 
 CHUNK = 4 * 1024**2
 DATA_BYTES = 4 * 1024**3
 RESERVE = 512 * 1024**2
 PAYLOAD = '/SurfaceGoGamingOS/surface-go.img'
+BASE_ROOT_UUID = '8b4a530e-d6d4-4e69-9307-310000000001'
+BASE_DATA_UUID = '8b4a530e-d6d4-4e69-9307-310000000002'
 
 
 def regular(path):
@@ -118,14 +122,48 @@ def verify_data(binary, data, expected_sha, expected_size):
         raise RuntimeError('Embedded installer full-file readback checksum failed.')
 
 
-def render_config(template, destination, stage):
+def prepare_live_boot(images, workspace, tools):
+    """Give each USB its own root selector without changing the installed base.
+
+    The EFI FAT copy and GPT must be rendered together. Merely changing the GPT
+    would leave GRUB requesting the older installed filesystem at startup.
+    """
+    source = images/'efi-part/EFI/BOOT/grub.cfg'
+    text = source.read_text()
+    selector = 'root=PARTUUID=' + BASE_ROOT_UUID
+    if text.count(selector) != 1:
+        raise RuntimeError('Expected exactly one installed root selector in EFI configuration')
+    root_uuid, data_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+    if len({root_uuid, data_uuid, BASE_ROOT_UUID, BASE_DATA_UUID}) != 4:
+        raise RuntimeError('Live and installed partition identifiers must differ')
+    config = workspace/'grub-live.cfg'
+    config.write_text(text.replace(selector, 'root=PARTUUID='+root_uuid+' surface.boot=live'))
+    efi = workspace/'efi-usb.vfat'
+    regular(images/'efi.vfat')
+    shutil.copyfile(images/'efi.vfat', efi)
+    subprocess.run([str(tools/'mcopy'), '-o', '-i', str(efi), str(config),
+                    '::/EFI/BOOT/grub.cfg'], check=True, capture_output=True, timeout=30)
+    readback = subprocess.run([str(tools/'mtype'), '-i', str(efi), '::/EFI/BOOT/grub.cfg'],
+                              check=True, capture_output=True, text=True, timeout=30).stdout
+    if readback != config.read_text():
+        raise RuntimeError('Live EFI root selector readback failed')
+    return dict(root_uuid=root_uuid, data_uuid=data_uuid, efi_image=str(efi.resolve()))
+
+
+def render_config(template, destination, stage, boot):
     text = template.read_text()
     if text.count('@INSTALLER_DATA_ROOT@') != 1:
         raise RuntimeError('USB config must have exactly one installer DATA staging reference.')
     name = str(stage.resolve())
     if any(c in name for c in ('"', "'", '\\', '\n', '\r')):
         raise RuntimeError('Unsupported image staging path for genimage shell invocation.')
-    destination.write_text(text.replace('@INSTALLER_DATA_ROOT@', name))
+    replacements = {'@INSTALLER_DATA_ROOT@': name, '@LIVE_ROOT_UUID@': boot['root_uuid'],
+                    '@LIVE_DATA_UUID@': boot['data_uuid'], '@LIVE_EFI_IMAGE@': boot['efi_image']}
+    for token, value in replacements.items():
+        if text.count(token) != 1 or any(c in value for c in ('"', "'", '\\', '\n', '\r')):
+            raise RuntimeError('Invalid live image substitution: '+token)
+        text = text.replace(token, value)
+    destination.write_text(text)
 
 
 def build(images, build_dir, template, genimage, debugfs_binary):
@@ -144,7 +182,8 @@ def build(images, build_dir, template, genimage, debugfs_binary):
         work = temp/'genimage-work'
         try:
             stage_payload(base, root, base_sha)
-            render_config(template, config, root)
+            boot = prepare_live_boot(images, temp, genimage.parent)
+            render_config(template, config, root, boot)
             subprocess.run([str(genimage), '--rootpath', str(temp), '--tmppath', str(work),
                             '--inputpath', str(images), '--outputpath', str(images),
                             '--config', str(config)], check=True)
@@ -160,7 +199,8 @@ def build(images, build_dir, template, genimage, debugfs_binary):
         outer_image=outer.name, outer_sha256=outer_sha, outer_bytes=outer.stat().st_size,
         installation_image=base.name, installation_sha256=base_sha, installation_bytes=base.stat().st_size,
         embedded_path='/data'+PAYLOAD, data_bytes=DATA_BYTES, payload_readback='PASS',
-        payload_uid=0, payload_gid=0, payload_mode='0444', recursive_payload=False)
+        payload_uid=0, payload_gid=0, payload_mode='0444', recursive_payload=False,
+        live_root_uuid=boot['root_uuid'], live_data_uuid=boot['data_uuid'])
     (images/'installer-media.json').write_text(json.dumps(manifest, indent=2)+'\n')
     print(json.dumps(manifest), flush=True)
 

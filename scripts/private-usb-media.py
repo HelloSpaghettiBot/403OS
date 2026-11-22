@@ -145,7 +145,9 @@ def main():
     media.root_owned(installer,0o755)
     for path in installer.iterdir():media.root_owned(path,0o444)
     template=(ROOT/'external/board/surface-go1/genimage-usb.cfg').read_text().replace('size = 4G',f'size = {args.data_gib}G')
-    config=output/'genimage-private.cfg';config.write_text(template.replace('@INSTALLER_DATA_ROOT@',str(stage)))
+    template_path=output/'genimage-private-template.cfg';template_path.write_text(template)
+    boot=media.prepare_live_boot(images,output,host/'bin')
+    config=output/'genimage-private.cfg';media.render_config(template_path,config,stage,boot)
     try:
         subprocess.run([str(host/'bin/genimage'),'--rootpath',str(stage),'--tmppath',str(output/'genimage-work'),
             '--inputpath',str(images),'--outputpath',str(output),'--config',str(config)],check=True)
@@ -180,6 +182,7 @@ def main():
         installer_payload_sha256=base_sha,library_files=len(entries),library_bytes=inventory['bytes'],
         private_library_readback='PASS',auxiliary_files_readback=len(auxiliary),embedded_installer_readback='PASS',wifi_permissions='0600 root:root',
         preserved_state_entries=len(state),preserved_state_permissions='PASS',
+        live_root_uuid=boot['root_uuid'],live_data_uuid=boot['data_uuid'],
         contains_private_data=True,public_distribution=False)
     (output/'private-media.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt),flush=True)

@@ -24,7 +24,7 @@ struct ControlView {
     // Render these exact cells, 13 columns per row. Final row: Done/Delete/Cancel.
     std::vector<std::string> keyboard;
     bool busy = false;
-    bool critical = false; // Installer writing: do not close/power off the session.
+    bool critical = false; // Installation/update active: keep the session and power on.
 };
 class ControlCenter {
 public:

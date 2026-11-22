@@ -64,10 +64,23 @@ Microsoft documents the settings in
 To enter UEFI, shut down, wait about ten seconds, then hold Volume Up while
 pressing and releasing Power. Keep Volume Up held until UEFI appears.
 For USB startup, insert the USB while powered off, hold Volume Down, then
-press and release Power. Follow Microsoft's
+press and release Power. Keep Volume Down held until the spinning dots appear.
+If the installed system starts, enter UEFI and enable USB startup or select
+the USB device in **Boot configuration**. Follow Microsoft's
 [USB startup instructions](https://support.microsoft.com/en-us/surface/drivers-firmware/boot-surface-from-a-usb-device).
 Firmware policy or passwords must be handled by the device administrator.
 These instructions do not establish that this build has passed Surface tests.
+
+Each newly packaged live USB has fresh root and DATA partition identifiers.
+Its EFI configuration selects that USB's root partition; the installation
+payload retains the identifiers used by installed systems. Early startup
+mounts DATA from the same physical disk as the running root filesystem,
+keeping that system's games, profiles and settings together. Firmware still
+determines whether the USB or internal system starts.
+
+Older 403 OS USB images shared their root and DATA identifiers with installed
+copies. Rewrite those USBs with a current image before testing startup with
+both disks connected.
 
 Keep a separate Windows recovery USB if you need a return path. Microsoft's
 [Surface recovery guide](https://support.microsoft.com/en-us/surface/drivers-firmware/creating-and-using-a-usb-recovery-drive-for-surface)
@@ -127,14 +140,15 @@ than silently omitted.
 ## Install to internal storage
 
 Installation replaces **every partition and file on the selected disk**,
-including Windows, recovery partitions and existing DATA. There is no dual-boot
-or mode that preserves DATA already on the target. Supported data from the
+including Windows, recovery partitions and existing DATA. To keep an existing
+403 OS installation's DATA, use [Update existing 403 OS](UPDATES.md) instead.
+Fresh installation does not provide dual boot. Supported data from the
 running live USB is copied into the new installation after cloning. Back up
 first and use only an image whose matching live/install tests have completed.
 VM installation and data migration have passed. Physical Surface installation
 remains under validation.
 
-1. In the live HOME, choose **Install 403 OS**, or open Settings → **Install to internal storage**.
+1. In the live HOME, choose **Install 403 OS**, or open Settings → **Install or update 403 OS**.
    Review the intended internal whole disk's model, stable ID and capacity.
    The installer requires at least 60,000,000,000 bytes and 512-byte sectors.
    USB/removable, boot/root, mounted and active-swap targets are excluded.
@@ -155,9 +169,9 @@ remains under validation.
 5. Choose **Power off**. After shutdown, remove the USB and start the device
    from internal storage. There is no automatic reboot.
 
-The source and installed clone have fixed root/DATA PARTUUIDs. Leaving the
-USB attached can select the wrong copy; remove it after shutdown before the
-normal installed boot.
+Removing the USB after installation lets the firmware start the internal
+system normally. To return to a live session, reconnect the USB and select
+USB startup using the Surface firmware controls above.
 
 The installer expands only freshly cloned, unmounted DATA into unused space
 on that target. It preserves partition starts/identities and EFI/root payloads,

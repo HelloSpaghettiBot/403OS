@@ -60,7 +60,7 @@ class USBPlanTests(unittest.TestCase):
         self.source = self.directory/"surface-go.img"
         basic = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
         create_disk(self.target, usb.EXPECTED_BYTES, [
-            (1, basic, usb.OLD_BOOT_GUID, 2048, (usb.H_START-2048)*512, "UDFVOLUME", 0),
+            (1, basic, usb.OLD_BOOT_GUID, 2048, (usb.H_START-2048)*512, "EXAMPLE_BOOT", 0),
             (2, basic, usb.H_GUID, usb.H_START, usb.H_BYTES, "H files must stay", 0x100000000000001)])
         start = 2048
         source_entries = []

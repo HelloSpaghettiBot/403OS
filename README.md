@@ -25,6 +25,8 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
 - Display resolution trials and sensor-driven rotation of the internal screen.
 - Live USB and an internal-storage installer that carries over local games,
   saves, settings and password-protected profiles from the live USB.
+- Update an existing installation from USB while keeping its games, saves,
+  profiles, passwords and settings, with a verified system recovery copy.
 
 Supply your own games and required BIOS files. Public builds contain no ROMs,
 commercial game artwork, proprietary clients or account credentials.
@@ -44,6 +46,7 @@ target disk need a separate backup. External game drives remain separate.
 ## Getting started
 
 [Installation and recovery](docs/INSTALL_RECOVERY.md) ·
+[System updates](docs/UPDATES.md) ·
 [Controllers and Bluetooth](docs/BLUETOOTH.md) ·
 [Remote play](docs/REMOTE_PLAY.md) ·
 [Windows applications](docs/WINDOWS_COMPATIBILITY.md) ·

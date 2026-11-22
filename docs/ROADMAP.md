@@ -32,8 +32,12 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [x] Self-contained outer/base image pipeline with sparse payload readback checks.
 - [x] Installer migration of local live-USB games, saves, settings and profiles,
   preserving password hashes, ownership and permissions with file readback.
-- [x] Recorded suite: 327 Python tests (300 main plus 27 app fixtures) and
-  five native unit test executables.
+- [x] Recorded suite: 371 Python tests (344 main plus 27 app fixtures) and
+  five native unit test executables; 14 final DATA-mount tests also pass.
+- [x] Distinct live root/DATA partition identifiers and root-relative DATA
+  selection, including Linux 6.12, NVMe/eMMC and guarded mount fixtures.
+- [x] Offline updater with guarded EFI/root-only writes, verified system backups
+  and explicit restoration; 22 backend tests and native UI review checks.
 
 ## Historical VM and media evidence
 
@@ -49,11 +53,16 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 ## Current validation
 
-- [x] Updated personal-media UEFI boot and GUI shutdown (`20261121-135952-live`).
+- [x] Updated test-media UEFI USB boot with an older internal SATA installation
+  attached; root and DATA both selected from the USB (`20261121-173759-live`).
+- [x] Production GUI update, verified EFI/root backup, copy/readback and power-off.
 - [x] Bluetooth module/firmware/service startup and root-only diagnostic file.
 - [x] Disposable-overlay login fixture, library/covers, all emulator probes,
   browser/global return, rotation, network and non-silent audio.
 - [x] Private refresh retains profile/save file contents and original modes.
+- [x] One detached UEFI boot of the current updated SATA system, retaining the
+  existing password and library; runtime checks and power-off passed
+  (`20261121-175027-test`).
 - [ ] Physical Surface adapter detection, pairing, gameplay and reconnect.
 
 ## Previous revision’s installation acceptance
@@ -70,6 +79,18 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
   app/runtime checks, audio and clean power-off (`20261121-112520-test`).
 - [ ] Repeat secondary-profile and display-trial acceptance on this revision.
 - [ ] Repeat detached cold boots and recovery/persistence checks.
+
+## Offline USB updates
+
+- [x] Update an existing compatible 403 OS installation from a newer live USB,
+  with a separate Cancel-default review and verified system backup before
+  replacing EFI/root while retaining installed DATA and its partition layout.
+- [x] Verify update copy/readback and unchanged installed games, saves,
+  profiles, password hashes and settings on a disposable existing VM disk.
+  Complete direct byte comparison passed for all DATA/GPT and new EFI/root.
+- [x] Cold-boot the updated internal VM without its installer USB and verify
+  existing-password login, game library, saved data and clean shutdown.
+- [ ] Verify recovery after an update failure before physical acceptance.
 
 ## Hardware and release
 
@@ -95,6 +116,9 @@ checks and fixture coverage. Ipega-specific behavior remains unverified.
 The reported Surface touchscreen and Bluetooth failures remain unresolved
 until physical testing confirms operation. Earlier Intel HD 615 initialization
 and ELAN registration show detection only. Current VM evidence covers root
-authentication, rotation, GUI installation/migration and one detached boot with
-the retained password and library. Physical hardware, recovery and enrolled
+authentication, rotation, correct USB root/DATA selection with an older internal
+disk attached, the offline update UI and one detached updated-system boot.
+The preceding revision separately
+passed installation/migration and a detached boot with the retained password
+and library. Physical hardware, recovery and enrolled
 streaming remain outside that evidence.

@@ -9,6 +9,10 @@ for binary in usr/bin/amixer usr/bin/aplay usr/sbin/alsactl; do
         exit 1
     fi
 done
+if ! test -x "$TARGET_DIR/sbin/debugfs"; then
+    echo 'Missing updater filesystem inspection tool: /sbin/debugfs; run e2fsprogs-reconfigure' >&2
+    exit 1
+fi
 python3 "$board/../../../scripts/check-hardware-config.py" \
     --config "$BUILD_DIR/linux-6.12.118/.config" --target "$TARGET_DIR" \
     --buildroot-config "$BINARIES_DIR/../.config" \
@@ -33,6 +37,7 @@ install -D -m 0755 "$board/../../../services/pokemmo-setup/pokemmo-setup" "$TARG
 install -D -m 0755 "$board/../../../services/pokemmo-setup/pokemmo-launch" "$TARGET_DIR/usr/bin/pokemmo-launch"
 install -D -m 0644 "$board/../../../services/pokemmo-setup/pokemmo-setup.py" "$TARGET_DIR/usr/libexec/surface/pokemmo-setup.py"
 install -D -m 0755 "$board/../../../services/install-device.py" "$TARGET_DIR/usr/sbin/surface-install-device"
+install -D -m 0755 "$board/../../../services/update-device.py" "$TARGET_DIR/usr/sbin/surface-update-device"
 install -D -m 0755 "$board/../../../installer/seed-data.py" "$TARGET_DIR/usr/sbin/surface-seed-data"
 install -D -m 0755 "$board/../../../scripts/library-scan.py" "$TARGET_DIR/usr/bin/surface-library-scan"
 install -D -m 0755 "$board/../../../services/dw3/dw3-setup" "$TARGET_DIR/usr/bin/dw3-setup"
@@ -46,4 +51,8 @@ install -D -m 0644 "$board/../../../services/orientation.py" "$TARGET_DIR/usr/sb
 install -D -m 0755 "$board/../../../services/profiles.py" "$TARGET_DIR/usr/sbin/surface-profiles"
 install -D -m 0755 "$board/../../../services/library-discovery.py" "$TARGET_DIR/usr/sbin/surface-library-discovery"
 install -D -m 0755 "$board/../../../services/bluetooth.py" "$TARGET_DIR/usr/sbin/surface-bluetooth"
-grep -q SURFACE_DATA "$TARGET_DIR/etc/fstab" || printf '/dev/disk/by-partuuid/8b4a530e-d6d4-4e69-9307-310000000002 /data ext4 defaults,noauto 0 2 # SURFACE_DATA\n' >> "$TARGET_DIR/etc/fstab"
+install -D -m 0755 "$board/../../../services/mount-data.py" "$TARGET_DIR/usr/sbin/surface-mount-data"
+# Remove the previous global PARTUUID entry during incremental builds too.
+# S20data selects partition 3 from the actual mounted root disk instead.
+sed -i '\|^[^#].*[[:space:]]/data[[:space:]]|d; /# SURFACE_DATA/d' "$TARGET_DIR/etc/fstab"
+printf '# SURFACE_DATA: mounted by S20data from the running root disk\n' >> "$TARGET_DIR/etc/fstab"
