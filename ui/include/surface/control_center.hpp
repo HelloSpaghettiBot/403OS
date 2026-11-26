@@ -35,6 +35,8 @@ public:
     void open(PanelKind panel);
     bool active() const;
     void navigate(Action action);
+    void touch(float x,float y);
+    void scroll(int rows);
     void inputText(std::string text);
     void backspace();
     void submitText();

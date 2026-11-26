@@ -1,11 +1,12 @@
-"""Pairing protocol tests use a scripted child, never the host Bluetooth radio."""
+"""Typed Agent1 integration on a private bus; never touches the host's radios."""
+import asyncio
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -13,229 +14,283 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('surface_bluetooth_pair', ROOT / 'services/bluetooth-pair.py')
 pairing = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pairing)
+try:
+    from dbus_next import Message, MessageType, Variant
+    from dbus_next.aio import MessageBus
+    AVAILABLE = True
+except ImportError:
+    AVAILABLE = False
 ADDRESS = '00:11:22:33:44:55'
-
-FAKE_CLIENT = r'''
-import json, os, subprocess, sys, time
-scenario = os.environ.get('PAIR_SCENARIO', 'ok')
-def output(value):
-    sys.stdout.write(value)
-    sys.stdout.flush()
-if scenario == 'orphan':
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-    open(os.environ['PAIR_CHILD_PID'], 'w').write(str(child.pid))
-if scenario in ('registration-timeout', 'orphan'):
-    time.sleep(60)
-    sys.exit(0)
-if scenario == 'early-exit':
-    sys.exit(0)
-output('\x1b[0;32mAgent reg')
-time.sleep(.01)
-output('istered\x1b[0m\n[bluetooth]# ')
-for row in sys.stdin:
-    command = row.rstrip('\n')
-    with open(os.environ['PAIR_COMMAND_LOG'], 'a') as stream:
-        stream.write(json.dumps(command) + '\n')
-    if command.startswith('pair '):
-        if scenario in ('pin', 'passkey', 'confirm', 'authorize'):
-            prompts = dict(pin='Enter PIN code:', passkey='Enter passkey (number in 0-999999):',
-                           confirm='Confirm passkey 123456 (yes/no):', authorize='Accept pairing (yes/no):')
-            output('[agent] ' + prompts[scenario] + ' ')
-            answer = sys.stdin.readline().rstrip('\n')
-            with open(os.environ['PAIR_COMMAND_LOG'], 'a') as stream:
-                stream.write(json.dumps('ANSWER:' + answer) + '\n')
-            if scenario in ('confirm', 'authorize') and answer != 'yes':
-                output('Failed to pair: org.bluez.Error.AuthenticationRejected\n')
-                continue
-        elif scenario == 'failed':
-            output('Failed to pair: org.bluez.Error.AuthenticationFailed\n')
-            continue
-        elif scenario == 'prefixed-failed':
-            # The shipped client uses "[<device alias>]> " after selecting
-            # a connected device; readline redraws can leave it on this line.
-            output('\r[Fixture controller]> Failed to pair: org.bluez.Error.AuthenticationFailed\n')
-            continue
-        elif scenario == 'already-paired':
-            output('Failed to pair: org.bluez.Error.AlreadyExists\n')
-            continue
-        elif scenario == 'display':
-            output('[agent] PIN code: 1234\n')
-        output('Pairing successful\n')
-    elif command.startswith('trust '):
-        output('Changing ' + command[6:] + ' trust succeeded\n')
-    elif command.startswith('connect '):
-        output('Connection successful\n')
-    elif command.startswith('info '):
-        if scenario != 'no-info-header':
-            output('Device ' + command[5:] + ' (public)\n')
-        output('\tPaired: yes\n\tTrusted: yes\n\tConnected: ' + ('no' if scenario == 'false-readback' else 'yes') + '\n')
-    else:
-        sys.exit(3)
-'''.replace('\\x1b', '\x1b')
+ADAPTER = 'AA:BB:CC:DD:EE:FF'
+PEER = '/org/bluez/hci1/dev_00_11_22_33_44_55'
 
 
-class PairingProtocolTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
-        self.fake = self.base / 'client.py'
-        self.fake.write_text(FAKE_CLIENT)
-        self.log = self.base / 'commands.jsonl'
-        self.child_pid = self.base / 'child.pid'
-        self.events = []
+@unittest.skipUnless(AVAILABLE and shutil.which('dbus-daemon'), 'requires dbus-next and dbus-daemon')
+class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.daemon = subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--print-address=1'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.bus_address = self.daemon.stdout.readline().strip()
+        self.bus = await MessageBus(bus_address=self.bus_address).connect()
+        await self.bus.request_name('org.bluez')
+        self.bus.add_message_handler(self.handle)
+        self.events, self.calls, self.tasks = [], [], []
+        self.properties = dict(Address=Variant('s', ADDRESS), Name=Variant('s', 'Fixture controller'),
+            Paired=Variant('b', False), Trusted=Variant('b', False), Connected=Variant('b', False),
+            ServicesResolved=Variant('b', True))
+        self.prompt = None
+        self.answer = 'yes'
+        self.callback_answer = None
+        self.register_capability = None
+        self.registered = None
+        self.input_ready = True
+        self.fail_pair = False
+        self.answer_delay = 0
+        self.resolve_after_pair = False
+        self.connect_saw_services_resolved = None
         self.read_fd, self.write_fd = os.pipe()
-        self.addCleanup(os.close, self.read_fd)
-        self.addCleanup(os.close, self.write_fd)
 
-    def session(self, scenario='ok', answer=None):
+    async def asyncTearDown(self):
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.bus.disconnect()
+        await self.bus.wait_for_disconnect()
+        self.bus._sock.close()
+        self.daemon.terminate()
+        self.daemon.wait(timeout=3)
+        self.daemon.stdout.close()
+        os.close(self.read_fd)
+        os.close(self.write_fd)
+
+    def handle(self, message):
+        if message.message_type != MessageType.METHOD_CALL:
+            return False
+        task = asyncio.create_task(self.reply(message))
+        self.tasks.append(task)
+        return True
+
+    async def reply(self, m):
+        self.calls.append((m.path, m.member))
+        if m.member == 'GetManagedObjects':
+            objects = {'/org/bluez/hci0': {pairing.ADAPTER: {'Address': Variant('s', '11:22:33:44:55:66'), 'Powered': Variant('b', True)}},
+                '/org/bluez/hci1': {pairing.ADAPTER: {'Address': Variant('s', ADAPTER), 'Powered': Variant('b', True)}},
+                PEER: {pairing.DEVICE: self.properties}}
+            response = Message.new_method_return(m, 'a{oa{sa{sv}}}', [objects])
+        elif m.member == 'GetAll':
+            response = Message.new_method_return(m, 'a{sv}', [self.properties])
+        elif m.member == 'RegisterAgent':
+            self.registered = m.sender
+            self.register_capability = m.body[1]
+            response = Message.new_method_return(m)
+        elif m.member == 'Set':
+            self.properties[m.body[1]] = m.body[2]
+            response = Message.new_method_return(m)
+        elif m.member == 'Pair':
+            if self.fail_pair:
+                response = Message.new_error(m, 'org.bluez.Error.AuthenticationFailed', 'fixture failure')
+            else:
+                rejected = False
+                if self.prompt:
+                    member, signature, body = self.prompt
+                    result = await self.bus.call(Message(destination=m.sender, path=pairing.AGENT,
+                        interface='org.bluez.Agent1', member=member, signature=signature, body=body))
+                    rejected = result.message_type == MessageType.ERROR
+                    self.callback_answer = result.body
+                if rejected:
+                    response = Message.new_error(m, 'org.bluez.Error.AuthenticationRejected', 'declined')
+                else:
+                    self.properties['Paired'] = Variant('b', True)
+                    if self.resolve_after_pair:
+                        self.properties['ServicesResolved'] = Variant('b', False)
+                        asyncio.get_running_loop().call_later(
+                            .12, self.properties.__setitem__, 'ServicesResolved', Variant('b', True))
+                    response = Message.new_method_return(m)
+        elif m.member == 'Connect':
+            self.connect_saw_services_resolved = self.properties['ServicesResolved'].value
+            self.properties['Connected'] = Variant('b', True)
+            response = Message.new_method_return(m)
+        elif m.member in ('UnregisterAgent', 'CancelPairing', 'RequestDefaultAgent'):
+            response = Message.new_method_return(m)
+        else:
+            response = Message.new_error(m, 'org.freedesktop.DBus.Error.UnknownMethod', 'Unknown method')
+        await self.bus.send(response)
+
+    def session(self, **timeouts):
         def emit(event):
             self.events.append(event)
-            if event['event'] == 'prompt' and answer is not None:
-                response = answer(event) if callable(answer) else dict(id=event['id'], value=answer)
-                os.write(self.write_fd, json.dumps(response).encode() + b'\n')
-        env = dict(os.environ, PAIR_SCENARIO=scenario, PAIR_COMMAND_LOG=str(self.log),
-                   PAIR_CHILD_PID=str(self.child_pid))
-        return pairing.PairingSession([sys.executable, str(self.fake)], env=env,
-            emit=emit, response_fd=self.read_fd,
-            timeouts=dict(overall=2, register=.4, pair=.5, trust=.5, connect=.5, info=.4, prompt=.3))
+            if event['event'] == 'prompt' and self.answer is not None:
+                answer = self.answer(event) if callable(self.answer) else {'id': event['id'], 'value': self.answer}
+                asyncio.get_running_loop().call_later(self.answer_delay, os.write, self.write_fd,
+                    json.dumps(answer).encode() + b'\n')
+        return pairing.PairingSession(emit=emit, response_fd=self.read_fd,
+            bus_address=self.bus_address, find_input=lambda address, **kw: [{'gamepad': True}] if self.input_ready else [],
+            timeouts=dict(overall=4, call=.8, pair=.8, prompt=.4, ready=.3, connect=.8, cable=.5, **timeouts))
 
-    def commands(self):
-        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+    async def run_pair(self, session=None, pair=True):
+        return await (session or self.session()).run_async(ADDRESS, pair=pair, adapter=ADAPTER)
 
-    def test_pair_keeps_agent_for_pair_trust_connect_and_actual_readback(self):
-        session = self.session()
-        self.assertEqual(session.run(ADDRESS), dict(paired=True, trusted=True, connected=True))
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS, 'trust ' + ADDRESS,
-                                          'connect ' + ADDRESS, 'info ' + ADDRESS])
+    async def test_pair_trust_connect_requires_input_readback_and_selected_adapter(self):
+        result = await self.run_pair()
+        self.assertTrue(all(result[key] for key in ('paired', 'trusted', 'connected', 'input_ready')))
+        self.assertEqual(self.register_capability, 'NoInputNoOutput')
+        self.assertIn((PEER, 'Pair'), self.calls)
+        self.assertFalse(any(path.startswith('/org/bluez/hci0/') for path, _ in self.calls))
         self.assertEqual(self.events[-1]['event'], 'complete')
-        self.assertEqual(self.events[-1]['status'], 'PASS')
-        self.assertIsNotNone(session.process.returncode)
-        self.assertEqual(session.process.args[-2:], ['--agent', 'KeyboardDisplay'])
+        self.assertIn(('/org/bluez', 'UnregisterAgent'), self.calls)
 
-    def test_connect_does_not_pair_or_trust_again(self):
-        self.session().run(ADDRESS, pair=False)
-        self.assertEqual(self.commands(), ['connect ' + ADDRESS, 'info ' + ADDRESS])
+    async def test_waits_for_services_before_connecting_after_pair(self):
+        self.resolve_after_pair = True
+        await self.run_pair()
+        self.assertTrue(self.connect_saw_services_resolved)
+        self.assertTrue(any(event.get('phase') == 'services' for event in self.events))
 
-    def test_partial_prompt_and_code_input_are_handled_without_secret_events(self):
-        for scenario, answer, expected_kind in (('pin', '0000', 'pin'),
-                ('passkey', '123456', 'passkey'), ('confirm', 'yes', 'confirm'),
-                ('authorize', 'yes', 'confirm')):
-            with self.subTest(scenario=scenario):
+    def test_profile_unavailable_has_controller_mode_guidance(self):
+        error = pairing.failure('org.bluez.Error.BREDR.ProfileUnavailable')
+        self.assertIn('PC/Android/HID pairing mode', str(error))
+        self.assertEqual(error.code, 'ProfileUnavailable')
+
+    async def test_connect_does_not_repair_or_change_trust(self):
+        await self.run_pair(pair=False)
+        self.assertNotIn((PEER, 'Pair'), self.calls)
+        self.assertNotIn((PEER, 'Set'), self.calls)
+
+    async def test_pin_passkey_confirmation_and_authorization_callbacks(self):
+        for member, signature, body, answer, expected in (
+                ('RequestPinCode', 'o', [PEER], '0000', ['0000']),
+                ('RequestPasskey', 'o', [PEER], '1234', [1234]),
+                ('RequestConfirmation', 'ou', [PEER, 123456], 'yes', []),
+                ('RequestAuthorization', 'o', [PEER], 'yes', [])):
+            with self.subTest(member=member):
+                self.properties['Paired'] = Variant('b', False)
+                self.prompt = member, signature, body
+                self.answer = answer
                 self.events.clear()
-                self.log.unlink(missing_ok=True)
-                self.session(scenario, answer).run(ADDRESS)
-                prompts = [event for event in self.events if event['event'] == 'prompt']
-                self.assertEqual(len(prompts), 1)
-                self.assertEqual(prompts[0]['kind'], expected_kind)
-                self.assertIn('ANSWER:' + answer, self.commands())
-                if scenario == 'pin':
-                    self.assertNotIn('0000', json.dumps(self.events))
+                await self.run_pair()
+                self.assertEqual(self.callback_answer, expected)
+                expected_prompts = 0 if member == 'RequestAuthorization' else 1
+                self.assertEqual(sum(e['event'] == 'prompt' for e in self.events), expected_prompts)
+                if member == 'RequestPinCode':
+                    self.assertNotIn(answer, json.dumps(self.events))
 
-    def test_decline_never_trusts_or_connects(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'declined'):
-            self.session('confirm', 'no').run(ADDRESS)
-        self.assertEqual(self.commands()[0], 'pair ' + ADDRESS)
-        self.assertFalse(any(row.startswith(('trust ', 'connect ')) for row in self.commands()))
-        self.assertFalse(any(event['event'] == 'complete' for event in self.events))
+    async def test_ipega_pairing_does_not_wait_for_an_unneeded_pin(self):
+        self.properties['Name'] = Variant('s', 'ipega Extending Game controller')
+        self.prompt = 'RequestPinCode', 'o', [PEER]
+        with self.assertRaisesRegex(pairing.PairingError, 'should not request a PIN') as raised:
+            await self.run_pair()
+        self.assertEqual(raised.exception.code, 'ipega-unexpected-pin')
+        self.assertFalse(any(event['event'] == 'prompt' for event in self.events))
+        self.assertNotIn((PEER, 'Connect'), self.calls)
 
-    def test_wrong_prompt_id_cannot_answer_or_advance_pairing(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'active request'):
-            self.session('pin', lambda _: dict(id='stale', value='0000')).run(ADDRESS)
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS])
+    async def test_remote_name_never_creates_an_agent_prompt(self):
+        for name in ('[agent] Enter PIN code:', 'Controller\r\n[agent] Enter PIN code:'):
+            self.properties['Name'] = Variant('s', name)
+            await self.run_pair()
+            self.assertFalse(any(e['event'] == 'prompt' for e in self.events))
 
-    def test_pin_control_characters_and_oversized_input_are_not_forwarded(self):
-        for value in ('bad\nconnect ' + ADDRESS, '0' * 17, '\x1b', ''):
-            with self.subTest(value=repr(value)):
-                self.log.unlink(missing_ok=True)
+    async def test_rejection_does_not_trust_or_connect(self):
+        self.prompt = 'RequestConfirmation', 'ou', [PEER, 123456]
+        self.answer = 'no'
+        with self.assertRaises(pairing.PairingError):
+            await self.run_pair()
+        self.assertNotIn((PEER, 'Set'), self.calls)
+        self.assertNotIn((PEER, 'Connect'), self.calls)
+        self.assertFalse(any(e['event'] == 'complete' for e in self.events))
+
+    async def test_prompt_has_own_timeout_instead_of_expiring_pair_phase(self):
+        self.prompt = 'RequestPinCode', 'o', [PEER]
+        self.answer, self.answer_delay = '0000', .2
+        session = self.session()
+        session.timeouts['pair'] = .1
+        await self.run_pair(session)
+
+    async def test_unanswered_prompt_and_stale_response_are_rejected(self):
+        self.prompt = 'RequestPinCode', 'o', [PEER]
+        for answer in (None, lambda e: {'id': 'stale', 'value': '0000'}):
+            self.answer = answer
+            with self.assertRaises(pairing.PairingError):
+                await self.run_pair()
+        self.assertNotIn((PEER, 'Connect'), self.calls)
+
+    async def test_invalid_pin_and_passkey_not_returned_to_bluez(self):
+        for member, value in (('RequestPinCode', 'bad\ncode'), ('RequestPinCode', ''),
+                              ('RequestPinCode', 'x' * 17), ('RequestPasskey', '１２３'),
+                              ('RequestPasskey', '1000000')):
+            with self.subTest(member=member, value=value):
+                self.prompt = member, 'o', [PEER]
+                self.answer = value
                 with self.assertRaises(pairing.PairingError):
-                    self.session('pin', value).run(ADDRESS)
-                self.assertEqual(self.commands(), ['pair ' + ADDRESS])
-                self.assertNotIn(value, json.dumps(self.events)) if value else None
+                    await self.run_pair()
+                self.assertNotIn((PEER, 'Connect'), self.calls)
 
-    def test_passkey_requires_ascii_digits_within_six_digit_limit(self):
-        for value in ('1000000', '-1', '12a', '１２３', ''):
-            with self.subTest(value=value):
-                self.log.unlink(missing_ok=True)
-                with self.assertRaises(pairing.PairingError):
-                    self.session('passkey', value).run(ADDRESS)
-                self.assertEqual(self.commands(), ['pair ' + ADDRESS])
-
-    def test_confirmation_requires_explicit_yes_or_no(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'Yes or No'):
-            self.session('confirm', 'true').run(ADDRESS)
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS])
-
-    def test_no_automatic_confirmation_and_bounded_prompt_timeout(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'not answered'):
-            self.session('confirm').run(ADDRESS)
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS])
-
-    def test_failure_never_advances_to_trust_or_connect(self):
+    async def test_authentication_failure_keeps_specific_reason(self):
+        self.fail_pair = True
         with self.assertRaisesRegex(pairing.PairingError, 'authentication failed'):
-            self.session('failed').run(ADDRESS)
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS])
+            await self.run_pair()
+        self.assertNotIn((PEER, 'Connect'), self.calls)
 
-    def test_device_prompt_prefixed_failure_is_reported_without_waiting_for_timeout(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'authentication failed'):
-            self.session('prefixed-failed').run(ADDRESS)
-        self.assertEqual(self.commands(), ['pair ' + ADDRESS])
-        self.assertEqual(self.events[-1]['code'], 'AuthenticationFailed')
+    async def test_connected_without_input_is_not_success(self):
+        self.properties['ServicesResolved'] = Variant('b', True)
+        self.input_ready = False
+        with self.assertRaisesRegex(pairing.PairingError, 'working controller'):
+            await self.run_pair()
+        self.assertFalse(any(e['event'] == 'complete' for e in self.events))
 
-    def test_success_messages_cannot_override_negative_info_readback(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'without a confirmed'):
-            self.session('false-readback').run(ADDRESS)
-        self.assertFalse(any(event['event'] == 'complete' for event in self.events))
+    async def test_unresolved_services_fail_before_connect(self):
+        self.properties['ServicesResolved'] = Variant('b', False)
+        session = self.session(services=.05)
+        with self.assertRaisesRegex(pairing.PairingError, 'service discovery did not finish') as raised:
+            await self.run_pair(session)
+        self.assertEqual(raised.exception.code, 'services-unresolved')
+        self.assertNotIn((PEER, 'Connect'), self.calls)
 
-    def test_property_notifications_without_info_header_do_not_count_as_readback(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'timed out'):
-            self.session('no-info-header').run(ADDRESS)
+    async def test_delayed_input_is_waited_for(self):
+        self.input_ready = False
+        asyncio.get_running_loop().call_later(.1, setattr, self, 'input_ready', True)
+        await self.run_pair()
 
-    def test_already_paired_is_only_accepted_after_final_readback(self):
-        self.assertTrue(self.session('already-paired').run(ADDRESS)['connected'])
-        self.assertEqual(len(self.commands()), 4)
+    async def test_another_device_cannot_prompt_during_pairing(self):
+        self.prompt = 'RequestPinCode', 'o', ['/org/bluez/hci1/dev_11_22_33_44_55_66']
+        with self.assertRaises(pairing.PairingError):
+            await self.run_pair()
+        self.assertFalse(any(e['event'] == 'prompt' for e in self.events))
 
-    def test_display_code_is_presented_for_entry_on_the_device(self):
-        self.session('display').run(ADDRESS)
-        self.assertTrue(any(event['event'] == 'message' and '1234' in event['message']
-                            for event in self.events))
-
-    def test_dead_client_is_reported_before_completion(self):
-        with self.assertRaisesRegex(pairing.PairingError, 'exited'):
-            self.session('early-exit').run(ADDRESS)
-        self.assertFalse(any(event['event'] == 'complete' for event in self.events))
-
-    def test_registration_timeout_cleans_client_and_descendants(self):
-        session = self.session('orphan')
-        with self.assertRaisesRegex(pairing.PairingError, 'register'):
-            session.run(ADDRESS)
-        self.assertIsNotNone(session.process.returncode)
-        child = int(self.child_pid.read_text())
-        state = Path('/proc') / str(child) / 'stat'
-        # A terminated child may await init's reaper briefly; it must not run.
+    async def test_untrusted_bus_client_cannot_request_user_input(self):
+        session = self.session()
+        self.prompt = 'RequestPinCode', 'o', [PEER]
+        self.answer_delay = .2
+        self.answer = '0000'
+        task = asyncio.create_task(self.run_pair(session))
+        while not self.registered:
+            await asyncio.sleep(.01)
+        other = await MessageBus(bus_address=self.bus_address).connect()
         try:
-            child_state = state.read_text().split()[2]
-        except FileNotFoundError:
-            child_state = None
-        self.assertIn(child_state, (None, 'Z'))
+            response = await other.call(Message(destination=self.registered, path=pairing.AGENT,
+                interface='org.bluez.Agent1', member='RequestPinCode', signature='o', body=[PEER]))
+            self.assertEqual(response.message_type, MessageType.ERROR)
+            await task
+            self.assertEqual(sum(e['event'] == 'prompt' for e in self.events), 1)
+        finally:
+            other.disconnect()
+            await other.wait_for_disconnect()
+            other._sock.close()
 
-    def test_invalid_address_never_launches_client(self):
-        with patch.object(subprocess, 'Popen') as popen:
-            with self.assertRaisesRegex(pairing.PairingError, 'address'):
-                self.session().run('00:11:22:33:44:55\nquit')
-            popen.assert_not_called()
+    async def test_invalid_address_never_opens_bus(self):
+        with self.assertRaisesRegex(pairing.PairingError, 'address'):
+            await self.session().run_async('invalid', adapter=ADAPTER)
+        self.assertEqual(self.calls, [])
 
-    def test_cli_power_preparation_failure_does_not_launch_agent(self):
+
+class PairingCLITests(unittest.TestCase):
+    def test_preparation_failure_does_not_start_agent(self):
         events = []
-        with patch.object(sys, 'argv', ['surface-bluetooth-pair', '--pair', ADDRESS]), \
+        with patch.object(sys, 'argv', ['surface-bluetooth-pair', '--pair', ADDRESS, '--adapter', ADAPTER]), \
                 patch.object(pairing, 'json_event', side_effect=events.append), \
                 patch.object(pairing.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, b'private')) as run, \
                 patch.object(pairing, 'PairingSession') as session:
             self.assertEqual(pairing.main(), 1)
         session.assert_not_called()
-        self.assertEqual(run.call_args_list[0].args[0], [pairing.SERVICE, '--power-on'])
-        self.assertEqual(run.call_args_list[-1].args[0],
-                         [pairing.SERVICE, '--record-error', 'pairing-session-adapter-not-ready'])
+        self.assertEqual(run.call_args_list[0].args[0], [pairing.SERVICE, '--power-on', '--adapter', ADAPTER])
         self.assertNotIn('private', json.dumps(events))
 
 

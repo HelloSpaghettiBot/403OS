@@ -69,7 +69,8 @@ class BluezClientIntegrationTests(unittest.TestCase):
             'Address': dbus.String(ADDRESS), 'AddressType': dbus.String('public'),
             'Name': dbus.String('Fixture controller'), 'Alias': dbus.String('Fixture controller'),
             'Adapter': dbus.ObjectPath(ADAPTER_PATH), 'Paired': dbus.Boolean(False),
-            'Trusted': dbus.Boolean(False), 'Connected': dbus.Boolean(False)}
+            'Trusted': dbus.Boolean(False), 'Connected': dbus.Boolean(False),
+            'ServicesResolved': dbus.Boolean(True)}
         self.discovery_callback = None
         self.pair_requires_agent = False
         self.agents = {}
@@ -250,6 +251,10 @@ class BluezClientIntegrationTests(unittest.TestCase):
     def pairing_session(self, responses):
         # Import the helper's core directly so its real-image CLI guard is
         # retained in production while tests use only this private bus.
+        try:
+            import dbus_next  # noqa: F401
+        except ImportError as error:
+            self.skipTest('Pairing D-Bus integration requires bytecode compatible with the host Python: '+str(error))
         spec = importlib.util.spec_from_file_location(
             'surface_bluetooth_pair_integration', ROOT / 'services/bluetooth-pair.py')
         module = importlib.util.module_from_spec(spec)
@@ -266,8 +271,9 @@ class BluezClientIntegrationTests(unittest.TestCase):
                 value = responses[event['kind']]
                 os.write(writer, (json.dumps({'id': event['id'], 'value': value}) + '\n').encode())
 
-        session = module.PairingSession(client_argv=self.client_argv(), env=self.environment,
-                                        emit=receive, response_fd=reader)
+        session = module.PairingSession(emit=receive, response_fd=reader,
+            bus_address=self.environment['DBUS_SYSTEM_BUS_ADDRESS'],
+            find_input=lambda address, **kw: [{'gamepad': True}])
         return module, session, events
 
     def test_noninteractive_list_and_show_report_actual_fixture_adapter(self):

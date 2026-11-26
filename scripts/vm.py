@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 import shutil
 import socket
+import select
 import stat
 import subprocess
 import struct
@@ -21,6 +22,40 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts/vm-tests"
+
+
+class FakeIpega:
+    """A uinput Bluetooth HID passed only to this disposable VM by evdev."""
+    def __init__(self,directory):
+        self.errors=(directory/'fake-ipega.log').open('wb')
+        self.process=subprocess.Popen(['python3',str(ROOT/'scripts/fake-ipega.py')],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.errors,text=True,bufsize=1)
+        if not select.select([self.process.stdout],[],[],8)[0]:
+            self.close();raise RuntimeError('Fake iPega event device did not start')
+        self.path=self.process.stdout.readline().strip()
+        if not re.fullmatch(r'/dev/input/event[0-9]+',self.path):
+            self.close();raise RuntimeError('Fake iPega did not return a Linux event device')
+        # Wait for host udev permissions before QEMU opens the fixture.
+        subprocess.run(['udevadm','settle','--timeout=5'],check=True)
+
+    def send(self,kind,code,value):
+        self.process.stdin.write(f'{kind} {code} {value}\n');self.process.stdin.flush()
+
+    def press(self,button):
+        codes={'south':0x130,'east':0x131,'west':0x134,'north':0x133,'start':0x13b,'back':0x13a}
+        if button in ('left','right','up','down'):
+            axis=16 if button in ('left','right') else 17
+            self.send('abs',axis,-1 if button in ('left','up') else 1);time.sleep(.15);self.send('abs',axis,0)
+        else:
+            code=codes[button];self.send('key',code,1);time.sleep(.15);self.send('key',code,0)
+        time.sleep(.25)
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.stdin.close()
+            try:self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:self.process.kill();self.process.wait()
+        self.process.stdout.close();self.errors.close()
 
 
 def inspect_audio_capture(path):
@@ -91,12 +126,16 @@ def safe_file(path):
 
 def prepare_test_options(directory, args, disk, install=False, media=False):
     """Explicit installed-VM request only; the guest can never write this share."""
-    if not getattr(args, "test_proton", False):
+    proton=getattr(args,'test_proton',False)
+    ipega=getattr(args,'test_ipega',False)
+    if not proton and not ipega:
         return None
-    if args.mode != "test" or install or media or args.disk is None:
+    if proton and (args.mode != "test" or install or media or args.disk is None):
         raise ValueError("--test-proton requires mode=test and an explicit existing --disk")
-    if safe_file(args.disk) != safe_file(disk) or not safe_file(disk).is_file():
+    if proton and (safe_file(args.disk) != safe_file(disk) or not safe_file(disk).is_file()):
         raise ValueError("--test-proton requires the reviewed existing installed virtual disk")
+    if ipega and (install or args.mode not in ('live','test')):
+        raise ValueError('--test-ipega requires a graphical disposable live or installed VM')
     directory = Path(directory)
     if not directory.resolve().is_relative_to(ARTIFACTS.resolve()) or directory.is_symlink() or "," in str(directory):
         raise ValueError("Test options must stay inside this VM artifacts run")
@@ -105,7 +144,9 @@ def prepare_test_options(directory, args, disk, install=False, media=False):
     request = options / "request.json"
     descriptor = os.open(request, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
     with os.fdopen(descriptor, "w") as output:
-        json.dump({"schema": "surface-vm-test-options-v1", "test_proton": True}, output)
+        request={"schema": "surface-vm-test-options-v1", "test_proton": proton}
+        if ipega:request['test_ipega']=True
+        json.dump(request, output)
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
@@ -183,6 +224,8 @@ class VM:
                    "-display", "sdl,gl=off" if args.visible else "none"]
         if args.keyboard_model == 'usb':
             command += ['-device', 'usb-kbd']
+        if getattr(args,'ipega_evdev',None):
+            command += ['-device','virtio-input-host-pci,evdev='+args.ipega_evdev]
         if args.sleep_model == 's2idle':
             command += ['-global', 'ICH9-LPC.disable_s3=1']
         options = prepare_test_options(directory, args, disk, install=install, media=media)
@@ -729,6 +772,7 @@ def parse_arguments(argv=None):
     parser.add_argument("--image",type=Path,default=ROOT/'output/images/surface-go.img',help="Explicit live/installer image, including private media")
     parser.add_argument("--test-proton", action="store_true",
                         help="Explicit installed-VM Proton/runtime download and Windows command probe; requires --disk")
+    parser.add_argument('--test-ipega',action='store_true',help='Pass a synthetic Bluetooth iPega HID through real guest udev/SDL and exercise HOME')
     parser.add_argument("--test-display", action="store_true",help="Exercise installed display mode UI, confirmation and timeout rollback")
     parser.add_argument('--test-profiles',action='store_true',help='Require actual profile enrollment/login and reject an incorrect login password')
     parser.add_argument('--create-test-profile',action='store_true',help='Create the synthetic secondary profile on an existing root-only disposable disk')
@@ -763,6 +807,8 @@ def parse_arguments(argv=None):
         parser.error("--keep-open requires --visible and a live or test boot")
     if args.test_proton and (args.mode != "test" or args.disk is None):
         parser.error("--test-proton requires mode=test and an explicit existing --disk")
+    if args.test_ipega and args.mode=='install':
+        parser.error('--test-ipega requires a graphical disposable live or installed VM')
     if args.test_display and (args.mode != "test" or args.disk is None):
         parser.error("--test-display requires mode=test and an explicit existing --disk")
     if args.test_profiles and args.mode=='install':
@@ -791,6 +837,7 @@ def main():
                               "status": "NOT_RUN" if args.test_proton else "NOT_REQUESTED",
                               "gameplay_verified": False}
     vm = None
+    ipega=None
     try:
         image = args.image.resolve(strict=True)
         if args.image.is_symlink():raise ValueError('Image must not be a symlink')
@@ -810,6 +857,8 @@ def main():
             create_disk(disk)
         elif not safe_file(disk).is_file():
             raise FileNotFoundError("Use --disk with the previously installed virtual disk")
+        if args.test_ipega:
+            ipega=FakeIpega(directory);args.ipega_evdev=ipega.path
         vm = VM(directory, args, disk, install=args.mode == "install", media=args.mode == "live")
         summary.update(vm.metadata)
         if args.mode == "install":
@@ -829,6 +878,18 @@ def main():
             vm.wait_for("SURFACE_BROWSER_CLOSE_INPUT_READY",45)
             vm.chord(["ctrl","w"])
             summary["browser_close_input"]="QMP Ctrl+W"
+            if args.test_ipega:
+                vm.wait_for('SURFACE_IPEGA_PROBE_READY',90)
+                time.sleep(2)
+                ipega.press('south')
+                vm.wait_for('SURFACE_IPEGA_INPUT_PASS',20)
+                vm.wait_for('SURFACE_IPEGA_EMULATOR_READY',20)
+                time.sleep(.5)
+                ipega.send('key',0x131,1);time.sleep(1);ipega.send('key',0x131,0)
+                vm.wait_for('SURFACE_IPEGA_EMULATOR_INPUT_PASS',20)
+                vm.wait_for('SURFACE_IPEGA_PASS',20)
+                summary['checks']['ipega_unprivileged_default_profile_and_real_evdev_input']='PASS'
+                summary['checks']['ipega_actual_emulator_core_input']='PASS'
             vm.wait_for("SURFACE_APP_CHECK_END",1800 if args.test_proton else 120)
             vm.wait_for("SURFACE_READY graphics=wayland")
             authenticate_profile(vm,summary,required=args.test_profiles)
@@ -928,6 +989,14 @@ def main():
             vm.wait_for("action=1 tile=1", after=offset)
             after = vm.changed_screenshot("focus.png",before)
             summary["checks"]["qmp_keyboard_focus_and_framebuffer"] = "PASS"
+            if args.test_ipega:
+                position=len(vm.log.read_text(errors='replace'))
+                ipega.press('right');vm.wait_for('action=1 tile=2',10,after=position)
+                ipega.press('left');ipega.press('left')
+                vm.screenshot('ipega-home.png')
+                summary['checks']['ipega_home_controller_navigation']='PASS'
+                # Restore the same tile expected by the ordinary acceptance.
+                ipega.press('right')
             offset = len(vm.log.read_text(errors="replace"))
             vm.key("tab")
             vm.wait_for("overlay=1", after=offset)
@@ -1003,6 +1072,21 @@ def main():
                 summary['display_settings_test']=exercise_display(vm,args.width,args.height)
                 summary['checks']['display_apply_confirm_timeout_rollback']='PASS'
             if args.test_profiles:exercise_profiles(vm,summary,create=args.create_test_profile)
+            if args.test_ipega:
+                # Open the shipped graphical mapper through Settings, then use
+                # the controller's default B binding to return without edits.
+                start=len(vm.log.read_text(errors='replace'))
+                # Quick settings also clears the completed-app notice before
+                # opening Settings; a pointer tap could only dismiss it.
+                vm.key('tab');vm.key('ret');time.sleep(.4)
+                for _ in range(14):vm.key('down')
+                vm.key('ret');vm.wait_for('SURFACE_APPLICATION_START',20,after=start)
+                time.sleep(2);vm.screenshot('ipega-mapper.png')
+                ipega.press('east')
+                vm.wait_for('SURFACE_APPLICATION_RETURN status=0',20,after=start)
+                vm.wait_for('SURFACE_HOME_FOCUS_READY',10,after=start)
+                vm.key('esc')
+                summary['checks']['ipega_graphical_mapper_launch_and_controller_return']='PASS'
             if args.test_update_ui:
                 summary['ui_updated_disk']=exercise_update_ui(vm)
                 summary['update_byte_comparison']=verify_updated_disk(directory,args.companion_disk,
@@ -1035,7 +1119,8 @@ def main():
                 print(f"HOME ready for interaction: {directory}", flush=True)
                 vm.process.wait()
             else:
-                if args.test_profiles or args.test_display:
+                if args.test_profiles or args.test_display or args.test_ipega:
+                    if args.test_ipega:vm.key('esc')
                     vm.click_ui(60+7*187+85,904)
                 else:
                     # The ordinary run reset the dock to zero after browser
@@ -1066,6 +1151,7 @@ def main():
     finally:
         if vm:
             vm.close()
+        if ipega:ipega.close()
         (directory / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 

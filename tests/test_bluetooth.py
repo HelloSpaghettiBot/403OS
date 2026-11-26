@@ -32,6 +32,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
         self.firmware = self.base / 'firmware'
         self.firmware.mkdir()
         self.messages = self.base / 'messages'
+        self.adapter = dict(address='00:11:22:33:44:55', hci='hci0')
         for name, value in (('RFKILL', self.rfkill), ('BLUETOOTH', self.devices),
                             ('USB', self.usb), ('LOGS', self.logs), ('FIRMWARE', self.firmware), ('MESSAGES', self.messages)):
             patcher = patch.object(bluetooth, name, value)
@@ -41,7 +42,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
     def radio(self, number, kind='bluetooth', soft='1', hard='0'):
         path = self.rfkill / ('rfkill' + str(number))
         path.mkdir()
-        for name, value in (('type', kind), ('soft', soft), ('hard', hard)):
+        for name, value in (('type', kind), ('name', 'hci' + str(number)), ('soft', soft), ('hard', hard)):
             (path / name).write_text(value + '\n')
         return path
 
@@ -49,23 +50,23 @@ class BluetoothRecoveryTests(unittest.TestCase):
         radio = self.radio(0)
         wifi = self.radio(1, 'wlan')
         wwan = self.radio(2, 'wwan')
-        bluetooth.clear_software_blocks()
+        bluetooth.clear_software_blocks(self.adapter)
         self.assertEqual((radio / 'soft').read_text(), '0\n')
         self.assertEqual((radio / 'hard').read_text(), '0\n')
         self.assertEqual((wifi / 'soft').read_text(), '1\n')
         self.assertEqual((wwan / 'soft').read_text(), '1\n')
 
     def test_hardware_block_refuses_before_any_software_write(self):
-        first = self.radio(0)
-        second = self.radio(1, hard='1')
+        first = self.radio(0, hard='1')
+        second = self.radio(1)
         with self.assertRaisesRegex(bluetooth.BluetoothError, 'hardware blocked'):
-            bluetooth.clear_software_blocks()
+            bluetooth.clear_software_blocks(self.adapter)
         self.assertEqual((first / 'soft').read_text(), '1\n')
         self.assertEqual((second / 'soft').read_text(), '1\n')
 
     def test_status_is_read_only_and_reports_software_block(self):
         radio = self.radio(0)
-        with patch.object(bluetooth, 'run') as run:
+        with patch.object(bluetooth, 'run') as run, patch.object(bluetooth, 'selected_adapter', return_value=self.adapter):
             self.assertIn('software blocked', bluetooth.status())
             run.assert_not_called()
         self.assertEqual((radio / 'soft').read_text(), '1\n')
@@ -73,7 +74,7 @@ class BluetoothRecoveryTests(unittest.TestCase):
     def test_unknown_rfkill_state_cannot_be_treated_as_unblocked(self):
         self.radio(0, soft='unknown')
         with self.assertRaisesRegex(bluetooth.BluetoothError, 'invalid'):
-            bluetooth.clear_software_blocks()
+            bluetooth.clear_software_blocks(self.adapter)
 
     def test_start_already_running_race_uses_actual_api_readiness(self):
         run = Mock(side_effect=[bluetooth.BluetoothError('starting'),
@@ -91,20 +92,65 @@ class BluetoothRecoveryTests(unittest.TestCase):
 
     def test_enable_requires_actual_power_readback(self):
         self.radio(0, soft='0')
-        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'),
+                               (0, 'Controller 00:11:22:33:44:55 fixture'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: no')])
-        with patch.object(bluetooth, 'run', run):
+        with patch.object(bluetooth, 'run', run), \
+             patch.object(bluetooth, 'selected_adapter', return_value=self.adapter), \
+             patch.object(bluetooth, 'controller_command', return_value='Changing power on succeeded'):
             with self.assertRaisesRegex(bluetooth.BluetoothError, 'without a powered adapter'):
                 bluetooth.power_on()
-        self.assertEqual(run.call_args_list[-1].args[0], [bluetooth.CLIENT, 'show'])
+        self.assertEqual(run.call_args_list[-1].args[0], [bluetooth.CLIENT, 'show', self.adapter['address']])
 
     def test_enable_checks_output_and_powered_controller(self):
         self.radio(0)
-        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'), (0, 'Controller 00:11:22:33:44:55 fixture'), (0, 'Changing power on succeeded'),
+        run = Mock(side_effect=[(0, ''), (0, 'Version 5.86'),
+                               (0, 'Controller 00:11:22:33:44:55 fixture'),
                                (0, 'Controller 00:11:22:33:44:55 fixture\n\tPowered: yes')])
-        with patch.object(bluetooth, 'run', run):
+        with patch.object(bluetooth, 'run', run), \
+             patch.object(bluetooth, 'selected_adapter', return_value=self.adapter), \
+             patch.object(bluetooth, 'controller_command', return_value='Changing power on succeeded') as command:
             self.assertEqual(bluetooth.power_on(), 'Changing power on succeeded')
+        command.assert_called_once_with(self.adapter['address'], 'power on')
         self.assertEqual((self.rfkill / 'rfkill0/soft').read_text(), '0\n')
+
+    def test_blocked_internal_adapter_does_not_block_usable_usb(self):
+        internal = self.radio(0, hard='1')
+        external = self.radio(1)
+        chosen = dict(address='00:11:22:33:44:77', hci='hci1')
+        bluetooth.clear_software_blocks(chosen)
+        self.assertEqual((external / 'soft').read_text(), '0\n')
+        self.assertEqual((internal / 'soft').read_text(), '1\n')
+        self.assertEqual((internal / 'hard').read_text(), '1\n')
+
+    def test_adapter_inventory_selects_usable_adapter_and_honors_explicit_choice(self):
+        self.radio(0, hard='1')
+        self.radio(1, soft='0')
+        def client(argv, timeout):
+            if argv[1] == 'list':
+                return 0, 'Controller 00:11:22:33:44:55 Internal [default]\nController 00:11:22:33:44:77 USB'
+            return 0, 'Controller ' + argv[2] + ' fixture\n\tPowered: yes'
+        mapping = {'00:11:22:33:44:55': 'hci0', '00:11:22:33:44:77': 'hci1'}
+        with patch.object(bluetooth, 'run', side_effect=client), \
+             patch.object(bluetooth, 'adapter_hci_names', return_value=mapping):
+            inventory = bluetooth.adapters()
+            self.assertEqual(inventory['selected'], '00:11:22:33:44:77')
+            self.assertFalse(inventory['adapters'][0]['usable'])
+            self.assertEqual(inventory['adapters'][0]['name'], 'Internal')
+            self.assertTrue(inventory['adapters'][1]['usable'])
+            self.assertEqual(bluetooth.adapters('00:11:22:33:44:55')['selected'], '00:11:22:33:44:55')
+            with self.assertRaisesRegex(bluetooth.BluetoothError, 'no longer available'):
+                bluetooth.adapters('00:11:22:33:44:99')
+
+    def test_command_validation_rejects_injected_or_unqualified_operations(self):
+        with patch.object(bluetooth.subprocess, 'Popen') as client:
+            for adapter, command, device in (
+                    ('00:11:22:33:44:55\nremove 00:11:22:33:44:66', 'devices', None),
+                    (self.adapter['address'], 'pair', '00:11:22:33:44:66'),
+                    (self.adapter['address'], 'remove', '00:11:22:33:44:66\nquit')):
+                with self.assertRaises(bluetooth.BluetoothError):
+                    bluetooth.controller_command(adapter, command, device)
+            client.assert_not_called()
 
     def test_empty_successful_list_waits_for_firmware_registration(self):
         run = Mock(side_effect=[(0, ''), (0, ''), (0, 'Controller 00:11:22:33:44:55 fixture')])

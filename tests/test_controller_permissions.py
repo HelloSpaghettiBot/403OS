@@ -19,30 +19,54 @@ def controller_rule(event):
     udev daemon, host device node, or host permission is touched by this test.
     """
     selected = {}
+    properties = dict(event)
     for line in RULE.read_text().splitlines():
         if not line or line.startswith('#'):
             continue
         pairs = []
         for field in line.split(', '):
-            match = re.fullmatch(r'([A-Z_]+(?:\{[A-Z_]+\})?)(==|!=|=)"([^"]*)"', field)
+            match = re.fullmatch(r'([A-Z_]+(?:\{[^}]+\})?)(==|!=|=)"([^"]*)"', field)
             if not match:
                 raise AssertionError('Unsupported rule syntax: ' + field)
             pairs.append(match.groups())
-        if all((fnmatch.fnmatchcase(event.get(key, ''), value) == (op == '=='))
+        if all((fnmatch.fnmatchcase(properties.get(key, ''), value) == (op == '=='))
                for key, op, value in pairs if op != '='):
             selected.update((key, value) for key, op, value in pairs if op == '=')
+            properties.update((key, value) for key, op, value in pairs if op == '=')
     return selected
 
 
 class ControllerPermissionsTests(unittest.TestCase):
     def event(self, kernel='event9', **properties):
-        return dict(ACTION='add', SUBSYSTEM='input', KERNEL=kernel,
-                    **{'ENV{ID_INPUT_JOYSTICK}': '1'}, **properties)
+        result = dict(ACTION='add', SUBSYSTEM='input', KERNEL=kernel,
+                      **{'ENV{ID_INPUT_JOYSTICK}': '1'})
+        result.update(properties)
+        return result
 
     def test_classified_controller_events_and_legacy_js_are_private_to_gamepad(self):
         for kernel in ('event9', 'js0'):
             with self.subTest(kernel=kernel):
                 self.assertEqual(controller_rule(self.event(kernel)), {'GROUP': 'gamepad', 'MODE': '0660'})
+
+    def test_ipega_hid_is_classified_when_keyboard_only_or_mixed_keyboard_and_joystick(self):
+        for extra in ({'ATTRS{id/product}': '0402', 'ATTRS{name}': 'PG-9023S Keyboard'},
+                      {'ATTRS{id/product}': '9999', 'ATTRS{name}': 'Unidentified'}):
+            for joystick in ('', '1'):
+                with self.subTest(extra=extra, joystick=joystick):
+                    event = self.event(**{
+                        'ENV{ID_INPUT_JOYSTICK}': joystick,
+                        'ENV{ID_INPUT_KEYBOARD}': '1',
+                        'ATTRS{id/vendor}': '1949', **extra,
+                    })
+                    self.assertEqual(controller_rule(event), {
+                        'ENV{ID_INPUT_JOYSTICK}': '1', 'ENV{ID_INPUT_KEYBOARD}': '0',
+                        'GROUP': 'gamepad', 'MODE': '0660'})
+
+    def test_non_ipega_keyboard_does_not_gain_gamepad_access(self):
+        event = self.event(**{'ENV{ID_INPUT_JOYSTICK}': '',
+                              'ENV{ID_INPUT_KEYBOARD}': '1',
+                              'ATTRS{id/vendor}': '1234'})
+        self.assertEqual(controller_rule(event), {})
 
     def test_keyboard_and_touch_events_never_gain_gamepad_access(self):
         for key in ('KEYBOARD', 'TOUCHSCREEN', 'TOUCHPAD'):

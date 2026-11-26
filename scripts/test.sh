@@ -13,11 +13,13 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread -Iui/include \
     ui/tests/status_tests.cpp ui/src/status.cpp -o build/tests/status-tests
 build/tests/status-tests | tee artifacts/tests/status.log
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread -Iui/include \
-    ui/tests/control_center_tests.cpp ui/src/control_center.cpp -o build/tests/control-center-tests
+    ui/tests/control_center_tests.cpp ui/src/control_center.cpp ui/src/model.cpp -o build/tests/control-center-tests
 build/tests/control-center-tests | tee artifacts/tests/control-center.log
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -pthread -Iui/include \
-    ui/tests/control_center_json_tests.cpp -o build/tests/command-json-tests
+    ui/tests/control_center_json_tests.cpp ui/src/model.cpp -o build/tests/command-json-tests
 build/tests/command-json-tests | tee artifacts/tests/command-json.log
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -Iui/include ui/tests/persistent_memory_tests.cpp -o build/tests/persistent-memory-tests
+build/tests/persistent-memory-tests | tee artifacts/tests/persistent-memory.log
 python3 -m unittest discover -s tests -v 2>&1 | tee artifacts/tests/scripts.log
 python3 -m unittest discover -s services/pokemmo-setup -p 'test_*.py' -v \
     2>&1 | tee artifacts/tests/pokemmo-setup.log

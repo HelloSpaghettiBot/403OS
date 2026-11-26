@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <ctime>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -18,6 +20,7 @@
 namespace {
 using namespace surface;
 constexpr const char* database="/data/config/gamecontrollerdb.txt";
+constexpr const char* default_database="/usr/share/surface/gamecontrollerdb.txt";
 struct Step {const char* key;const char* prompt;ControllerInput input=ControllerInput::Button;};
 constexpr std::array steps{
     Step{"a","A / south face button"},Step{"b","B / east face button"},
@@ -35,11 +38,13 @@ constexpr std::array steps{
     Step{"righttrigger","Press the RIGHT trigger / R2",ControllerInput::Trigger},
     Step{"guide","Guide / HOME button (optional)"}
 };
-std::string device_name(const char* name) {
+std::string device_name(const char* name,Uint16 vendor,Uint16 product) {
+    if(vendor==0x1949 && product==0x0402) return "iPega PG-9023";
+    if(vendor==0x1949) return "iPega controller";
     std::string result=name?name:"Unnamed controller";
     for(char& c:result)if(static_cast<unsigned char>(c)<32 || c==',' || c==127)c=' ';
     if(result.size()>120)result.resize(120);
-    return result.empty()?"Unnamed controller":result;
+    return result.empty() || result=="Unidentified" || result=="Unknown" ? "Unnamed controller":result;
 }
 struct Device {SDL_Joystick* joystick=nullptr;SDL_Gamepad* gamepad=nullptr;std::string name;};
 class Setup {
@@ -52,6 +57,7 @@ class Setup {
     std::size_t step=0,selected=0;
     std::vector<int> rest,last;
     Uint64 stable=0,neutral=0;
+    Uint64 next_refresh=0;
     bool armed=false,editing=false,done=false;
     std::string message;
     SDL_Window* window;
@@ -66,14 +72,19 @@ public:
     }
     void refresh() {
         // Retain open handles so hotplug does not invalidate an active capture.
+        SDL_ClearError();
         int count=0;auto* ids=SDL_GetJoysticks(&count);
         std::vector<SDL_JoystickID> present;
+        std::string open_error;
         for(int i=0;ids && i<count && i<256;++i) {
             const auto id=ids[i];present.push_back(id);
             auto found=devices.find(id);
             if(found==devices.end()) {
+                SDL_ClearError();
                 auto* joystick=SDL_OpenJoystick(id);
-                if(joystick)devices.emplace(id,Device{joystick,SDL_IsGamepad(id)?SDL_OpenGamepad(id):nullptr,device_name(SDL_GetJoystickNameForID(id))});
+                if(joystick)devices.emplace(id,Device{joystick,SDL_IsGamepad(id)?SDL_OpenGamepad(id):nullptr,
+                    device_name(SDL_GetJoystickNameForID(id),SDL_GetJoystickVendorForID(id),SDL_GetJoystickProductForID(id))});
+                else if(open_error.empty())open_error=SDL_GetError();
             } else if(!found->second.gamepad && SDL_IsGamepad(id))found->second.gamepad=SDL_OpenGamepad(id);
         }
         SDL_free(ids);
@@ -85,7 +96,12 @@ public:
             } else ++it;
         }
         order.clear();for(auto id:present)if(devices.contains(id))order.push_back(id);
-        if(mode==Mode::Devices)selected=std::min(selected,order.size());
+        if(mode==Mode::Devices)selected=std::min(selected,order.size()+1);
+        if(order.empty()) {
+            if(count>0 && !open_error.empty())message="SDL detected "+std::to_string(count)+" controller device(s), but could not open one: "+open_error;
+            else message="No controller input is visible to SDL. If Bluetooth says connected, reconnect in gamepad mode (iPega: hold X + HOME), then select Refresh controller list.";
+        } else if(message.starts_with("No controller input is visible to SDL") || message.starts_with("SDL detected "))message.clear();
+        next_refresh=SDL_GetTicks()+1000;
     }
     SDL_Joystick* joystick()const {const auto it=devices.find(chosen);return it==devices.end()?nullptr:it->second.joystick;}
     std::string display_binding(std::string_view key)const {
@@ -130,6 +146,7 @@ public:
         message=std::string(steps[step].prompt)+" assigned to "+binding+".";next();
     }
     void tick() {
+        if(mode==Mode::Devices && SDL_GetTicks()>=next_refresh)refresh();
         if(mode!=Mode::Calibrate && mode!=Mode::Capture)return;
         auto* joy=joystick();if(!joy)return;
         const auto now=SDL_GetTicks();
@@ -177,9 +194,10 @@ public:
     ControlView view()const {
         ControlView v;v.title="Controllers / button mapping";v.selected=selected;
         if(mode==Mode::Devices) {
-            for(const auto id:order)v.rows.push_back(devices.at(id).name+(SDL_IsGamepad(id)?"  [mapped]":"  [unmapped]"));
+            for(const auto id:order)v.rows.push_back(devices.at(id).name+(SDL_IsGamepad(id)?"  [connected, mapped]":"  [connected, unmapped]"));
+            v.rows.emplace_back("Refresh controller list");
             v.rows.emplace_back("Return to HOME");
-            v.status=message.empty()?"Select a controller. Unmapped controllers: press any button on the controller to configure it. Keyboard arrows / Enter and touch also work.":message;
+            v.status=order.empty()?message:message.empty()?"Connected controllers detected. Select one to assign buttons; unmapped controllers also start mapping when you press any button.":message;
         } else if(mode==Mode::Calibrate) {
             v.rows={"Release every button and center both sticks", "Leave both triggers released", "Cancel without saving"};
             v.status="Keep the controller still for one second to measure its resting axes. Esc or touch Cancel returns without changing saved mappings.";
@@ -200,7 +218,7 @@ public:
         return v;
     }
     void accept(std::size_t row) {
-        if(mode==Mode::Devices){if(row<order.size())start(order[row]);else done=true;}
+        if(mode==Mode::Devices){if(row<order.size())start(order[row]);else if(row==order.size())refresh();else done=true;}
         else if(mode==Mode::Calibrate){if(row==2)cancel();}
         else if(mode==Mode::Capture){if(row==1){message="Skipped; previous assignment kept.";next();}else if(row==2)cancel();}
         else if(mode==Mode::Review) {
@@ -261,6 +279,73 @@ int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--help") {
         std::puts("surface-controller-setup\nGuided raw SDL joystick mapping. Saves /data/config/gamecontrollerdb.txt only in the guest image.\nKeyboard: arrows/Enter, Space skip, Esc cancel. Touch: select the visible Skip/Cancel rows.\nDuring capture, controller B/Guide are assigned as inputs and cannot cancel.");return 0;
     }
+    if(argc==2 && std::string(argv[1])=="--vm-ipega-probe") {
+        std::ifstream identity("/sys/class/dmi/id/product_name");std::string product;
+        std::getline(identity,product);
+        const char* requested=std::getenv("SURFACE_VM_IPEGA_TEST");
+        if(product!="Surface Go OS Disposable Test VM" || !requested || std::string(requested)!="1") {
+            std::fprintf(stderr,"iPega VM probe is restricted to an explicitly requested disposable test VM.\n");return 2;
+        }
+        if(!SDL_Init(SDL_INIT_GAMEPAD|SDL_INIT_JOYSTICK)){std::fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
+        SDL_AddGamepadMappingsFromFile(default_database);
+        SDL_AddGamepadMappingsFromFile(database);
+        if(const char* personal=std::getenv("SDL_GAMECONTROLLERCONFIG_FILE"))SDL_AddGamepadMappingsFromFile(personal);
+        int count=0;auto* ids=SDL_GetJoysticks(&count);SDL_JoystickID target=0;
+        for(int i=0;ids && i<count;++i) {
+            if(SDL_GetJoystickVendorForID(ids[i])==0x1949 && SDL_GetJoystickProductForID(ids[i])==0x0402){target=ids[i];break;}
+        }
+        SDL_free(ids);
+        if(!target){std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=not-enumerated-by-SDL\n");SDL_Quit();return 1;}
+        const char* raw_name=SDL_GetJoystickNameForID(target);
+        const std::string name=raw_name?raw_name:"";
+        if(!SDL_IsGamepad(target)) {
+            std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=default-profile-missing name=%s\n",name.c_str());SDL_Quit();return 1;
+        }
+        char guid[33]{};SDL_GUIDToString(SDL_GetJoystickGUIDForID(target),guid,sizeof(guid));
+        SDL_Gamepad* gamepad=SDL_OpenGamepad(target);
+        SDL_Joystick* joystick=SDL_OpenJoystick(target);
+        if(!gamepad || !joystick) {
+            std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=unprivileged-open name=%s error=%s\n",name.c_str(),SDL_GetError());
+            if(gamepad)SDL_CloseGamepad(gamepad);
+            if(joystick)SDL_CloseJoystick(joystick);
+            SDL_Quit();return 1;
+        }
+        int buttons=0,axes=0;
+        for(int button=SDL_GAMEPAD_BUTTON_SOUTH;button<=SDL_GAMEPAD_BUTTON_DPAD_RIGHT;++button)
+            if(SDL_GamepadHasButton(gamepad,static_cast<SDL_GamepadButton>(button)))++buttons;
+        for(int axis=0;axis<SDL_GAMEPAD_AXIS_COUNT;++axis)
+            if(SDL_GamepadHasAxis(gamepad,static_cast<SDL_GamepadAxis>(axis)))++axes;
+        if(buttons<14 || axes<SDL_GAMEPAD_AXIS_COUNT) {
+            std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=incomplete-default-profile buttons=%d axes=%d\n",buttons,axes);
+            SDL_CloseGamepad(gamepad);SDL_CloseJoystick(joystick);SDL_Quit();return 1;
+        }
+        std::printf("SURFACE_IPEGA_DEVICE name=%s guid=%s buttons=%d axes=%d default_profile=PASS\n",name.c_str(),guid,buttons,axes);std::fflush(stdout);
+        auto setup=std::make_unique<Setup>(nullptr,nullptr);
+        const auto rows=setup->view().rows;
+        if(rows.empty() || rows.front()!="iPega PG-9023  [connected, mapped]") {
+            std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=mapper-device-list\n");
+            setup.reset();SDL_CloseGamepad(gamepad);SDL_CloseJoystick(joystick);SDL_Quit();return 1;
+        }
+        setup->accept(0);
+        const auto deadline=SDL_GetTicks()+10000;bool raw_input=false,mapped_input=false;
+        while(SDL_GetTicks()<deadline && !mapped_input) {
+            setup->tick();
+            SDL_Event event;while(SDL_PollEvent(&event)) {
+                if(event.type==SDL_EVENT_JOYSTICK_BUTTON_DOWN && event.jbutton.which==target)raw_input=true;
+                if(event.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN && event.gbutton.which==target && event.gbutton.button==SDL_GAMEPAD_BUTTON_SOUTH)mapped_input=true;
+                setup->event(event);
+            }
+            SDL_Delay(5);
+        }
+        const bool captured=setup->view().title.find("2 of ")!=std::string::npos;
+        setup.reset();
+        SDL_CloseGamepad(gamepad);SDL_CloseJoystick(joystick);SDL_Quit();
+        if(!raw_input || !mapped_input || !captured) {
+            std::fprintf(stderr,"SURFACE_IPEGA_FAIL reason=button-not-delivered raw=%d mapped=%d captured=%d\n",raw_input,mapped_input,captured);return 1;
+        }
+        std::puts("SURFACE_IPEGA_MAPPER_PASS listed=1 mapped=1 raw_capture=1");
+        std::puts("SURFACE_IPEGA_INPUT_PASS path=udev-to-sdl-to-mapped-gamepad-button");std::fflush(stdout);return 0;
+    }
     if(argc!=1){std::fprintf(stderr,"Unknown controller setup argument. Use --help.\n");return 2;}
     if(!controller_image_allowed()){std::fprintf(stderr,"Controller setup requires the Surface guest image and a mounted /data; no devices or files changed.\n");return 2;}
     if(!SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMEPAD|SDL_INIT_JOYSTICK)){std::fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
@@ -270,7 +355,9 @@ int main(int argc,char** argv) {
     try {
         if(!renderer)throw std::runtime_error(SDL_GetError());
         SDL_SetRenderLogicalPresentation(renderer,int(ui_width),int(ui_height),SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        SDL_AddGamepadMappingsFromFile(default_database);
         SDL_AddGamepadMappingsFromFile(database);
+        if(const char* personal=std::getenv("SDL_GAMECONTROLLERCONFIG_FILE"))SDL_AddGamepadMappingsFromFile(personal);
         HomeRenderer home(renderer);Setup setup(window,renderer);
         Model model({App{"controllers","Controller setup","Map your controller for HOME and emulators",""}});
         Status status;status.time="Controller setup";

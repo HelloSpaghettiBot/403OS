@@ -22,9 +22,9 @@ class AudioImageInventory(unittest.TestCase):
         hardware=importlib.util.module_from_spec(spec);spec.loader.exec_module(hardware)
         (kernel/'.config').write_text(''.join('CONFIG_'+name+'=y\n' for group in hardware.REQUIRED.values() for name in group)
                                      + ''.join('CONFIG_'+name+'=m\n' for name in hardware.MODULES))
-        (self.base/'.config').write_text('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG=y\n')
+        (self.base/'.config').write_text('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_SIXAXIS=y\n')
         bluez=build/'bluez5_utils-5.86';bluez.mkdir()
-        (bluez/'config.log').write_text('  $ ./configure --enable-hid --enable-hog\n')
+        (bluez/'config.log').write_text('  $ ./configure --enable-hid --enable-hog --enable-sixaxis\n')
         for name in hardware.FIRMWARE:
             path=self.target/'lib/firmware'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture')
         module_dir=self.target/'lib/modules/fixture'

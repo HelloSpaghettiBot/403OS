@@ -189,7 +189,8 @@ class UDisks:
         self.options = {'auth.no_user_interaction': dbus.Boolean(not interactive)}
 
     def interface(self, path, interface):
-        obj = self.bus.get_object('org.freedesktop.UDisks2', udisks_object(path))
+        object_path = path if str(path).startswith('/org/freedesktop/UDisks2/') else udisks_object(path)
+        obj = self.bus.get_object('org.freedesktop.UDisks2', object_path)
         return self.dbus.Interface(obj, interface)
 
     def unmount(self, path):
@@ -201,6 +202,35 @@ class UDisks:
         # Desktop authentication can take longer than the device-open itself.
         # Identity and capacity are checked again after this returns a handle.
         return self.interface(path, 'org.freedesktop.UDisks2.Block').OpenDevice('rw', options, timeout=600).take()
+
+    def object_property(self, object_path, interface, name):
+        obj = self.bus.get_object('org.freedesktop.UDisks2', object_path)
+        properties = self.dbus.Interface(obj, 'org.freedesktop.DBus.Properties')
+        return properties.Get(interface, name)
+
+    def expand_data(self, disk_path, disk_bytes):
+        """Grow the USB's final DATA partition and ext4 filesystem to capacity."""
+        disk_object = udisks_object(disk_path)
+        partitions = self.object_property(disk_object, 'org.freedesktop.UDisks2.PartitionTable', 'Partitions')
+        data_objects = [str(path) for path in partitions
+                        if int(self.object_property(str(path), 'org.freedesktop.UDisks2.Partition', 'Number')) == 3]
+        if len(data_objects) != 1:
+            raise FlashError('The flashed USB must expose exactly one DATA partition 3.')
+        data_object = data_objects[0]
+        block_interface = 'org.freedesktop.UDisks2.Block'
+        partition_interface = 'org.freedesktop.UDisks2.Partition'
+        filesystem_interface = 'org.freedesktop.UDisks2.Filesystem'
+        if self.object_property(data_object, block_interface, 'IdLabel') != 'SURFACE_DATA':
+            raise FlashError('USB partition 3 is not the expected SURFACE_DATA filesystem.')
+        self.interface(data_object, partition_interface).Resize(self.dbus.UInt64(0), self.options, timeout=600)
+        self.interface(data_object, filesystem_interface).Resize(self.dbus.UInt64(0), self.options, timeout=1800)
+        partition_bytes = int(self.object_property(data_object, block_interface, 'Size'))
+        filesystem_bytes = int(self.object_property(data_object, filesystem_interface, 'Size'))
+        if (partition_bytes <= 4 * 1024**3 or filesystem_bytes <= 4 * 1024**3
+                or partition_bytes > disk_bytes or filesystem_bytes > partition_bytes
+                or partition_bytes - filesystem_bytes > max(16 * 1024**2, partition_bytes // 100)):
+            raise FlashError('USB DATA partition or ext4 filesystem did not expand to the available space.')
+        return dict(partition_bytes=partition_bytes, filesystem_bytes=filesystem_bytes)
 
 
 def validate_fd(fd, disk):
@@ -316,6 +346,7 @@ def execute(plan, plan_sha, args, source_fd, disk, identity):
     fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.fcntl(fd, fcntl.F_GETFD) | fcntl.FD_CLOEXEC)
     started = False
     receipt_dir = None
+    fd_open = True
     try:
         validate_fd(fd, current)
         checked, checked_id = inspect(plan)
@@ -350,11 +381,31 @@ def execute(plan, plan_sha, args, source_fd, disk, identity):
         actual = copy_and_verify(source_fd, fd, size, disk['size'], plan['image_sha256'], progress, readback=readback)
         if source_stamp(source_fd) != stamp:
             raise FlashError('Source metadata changed during copy; do not trust this USB.')
+        if not readback:
+            raise FlashError('Expanding USB DATA requires the default complete image readback.')
+        # Resize only after the source image is fully read back and verified.
+        # UDisks moves the backup GPT, grows the final partition, then grows
+        # ext4 while preserving the embedded installer payload and user data.
+        os.close(fd);fd_open=False
+        latest, latest_id = inspect(plan)
+        require_unmounted(latest)
+        if latest_id != identity:
+            raise FlashError('USB identity changed before DATA expansion.')
+        expanded = backend.expand_data(latest['path'], latest['size'])
+        final, final_id = inspect(plan)
+        for record in reversed(list(tree_records(final))):
+            if any(record.get('mountpoints') or []):
+                backend.unmount(record['path'])
+        final, final_id = inspect(plan)
+        require_unmounted(final)
+        if final_id != identity:
+            raise FlashError('USB identity changed after DATA expansion.')
         result = dict(status='PASS' if readback else 'WRITTEN_UNVERIFIED', image_sha256=actual, image_bytes=size, usb_bytes=disk['size'],
             full_image_readback='PASS' if readback else 'SKIPPED_BY_EXPLICIT_REQUEST',
             image_gpt_crc32='PASS' if readback else 'SOURCE_ONLY',
             obsolete_end_gpt='CLEARED' if readback else 'WRITTEN_UNVERIFIED',
-            old_data_preserved=False, secure_full_media_erasure=False, data_expanded=False,
+            old_data_preserved=False, secure_full_media_erasure=False, data_expanded=True,
+            data_partition_bytes=expanded['partition_bytes'], data_filesystem_bytes=expanded['filesystem_bytes'],
             receipt_directory=str(receipt_dir))
         durable(receipt_dir/'result.json', (json.dumps(result, indent=2)+'\n').encode())
         return result
@@ -364,7 +415,8 @@ def execute(plan, plan_sha, args, source_fd, disk, identity):
                 partial_target_overwrite_possible=started, automatic_rollback=False))+'\n').encode())
         raise
     finally:
-        os.close(fd)
+        if fd_open:
+            os.close(fd)
 
 
 def main(argv=None):

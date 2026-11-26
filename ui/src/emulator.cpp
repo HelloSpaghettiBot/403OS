@@ -1,5 +1,6 @@
 // Native SDL3 libretro frontend. No ROM, firmware or game artwork is embedded.
 #include "surface/libretro.h"
+#include "surface/persistent_memory.hpp"
 #include <SDL3/SDL.h>
 #include <GLES2/gl2.h>
 #include <algorithm>
@@ -171,6 +172,7 @@ struct Frontend {
     bool gl_ready=false, gl_modern=false, context_ready=false, initialized=false, loaded=false, quit=false, failed=false;
     bool have_frame=false, software_seen=false;
     std::string failure, save_directory, save_file, core_directory;
+    std::array<surface::PersistentMemory,2> battery_saves;
     std::map<std::string,std::string> variables;
     std::vector<char> content;
     std::vector<std::uint16_t> converted;
@@ -564,30 +566,30 @@ struct Frontend {
         save_directory=(fs::absolute(options.save_dir)/safe_name(fs::path(options.core).stem().string())/id.str()).string();
         fs::create_directories(save_directory); fs::create_directories(options.system_dir);
         save_file=(fs::path(save_directory)/"save.srm").string();
+        battery_saves[0].path(save_file);
+        battery_saves[1].path(fs::path(save_directory)/"save.rtc");
     }
     void load_ram() {
-        auto* bytes=core.get_memory_data(RETRO_MEMORY_SAVE_RAM); const auto size=core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
-        if(!bytes || !size || size>64*1024*1024) return;
-        if(!fs::exists(save_file)) return;
-        if(fs::file_size(save_file)!=size) { std::fprintf(stderr,"SRAM size mismatch; preserving existing save: %s\n",save_file.c_str()); return; }
-        std::ifstream input(save_file,std::ios::binary); input.read(static_cast<char*>(bytes),static_cast<std::streamsize>(size));
-        if(!input) throw std::runtime_error("Could not read complete SRAM save");
-        std::printf("EMULATOR_SRAM_LOADED bytes=%zu file=%s\n",size,save_file.c_str());
+        const std::array<unsigned,2> ids{RETRO_MEMORY_SAVE_RAM,RETRO_MEMORY_RTC};
+        for(std::size_t i=0;i<ids.size();++i) {
+            const auto size=core.get_memory_size(ids[i]);
+            if(battery_saves[i].load(core.get_memory_data(ids[i]),size))
+                std::printf("EMULATOR_%s_LOADED bytes=%zu file=%s\n",i==0?"SRAM":"RTC",size,
+                            (fs::path(save_directory)/(i==0?"save.srm":"save.rtc")).c_str());
+        }
     }
     void save_ram() noexcept {
-        try {
-            const auto* bytes=static_cast<const char*>(core.get_memory_data(RETRO_MEMORY_SAVE_RAM)); const auto size=core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
-            if(!bytes || !size || size>64*1024*1024 || save_file.empty()) return;
-            const std::string temporary=save_file+".tmp-"+std::to_string(getpid());
-            const int fd=open(temporary.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
-            if(fd<0) throw std::runtime_error("Cannot create temporary SRAM save");
-            std::size_t written=0;
-            while(written<size) { const auto n=write(fd,bytes+written,size-written); if(n<=0) { close(fd); unlink(temporary.c_str()); throw std::runtime_error("Incomplete SRAM write"); } written+=static_cast<std::size_t>(n); }
-            const bool synced=fsync(fd)==0; const bool closed=close(fd)==0;
-            if(!synced || !closed || rename(temporary.c_str(),save_file.c_str())!=0) { unlink(temporary.c_str()); throw std::runtime_error("Cannot commit SRAM save"); }
-            const int dir=open(save_directory.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC); if(dir>=0) { fsync(dir); close(dir); }
-            std::uint64_t hash=14695981039346656037ULL; for(std::size_t i=0;i<size;++i) { hash^=static_cast<unsigned char>(bytes[i]); hash*=1099511628211ULL; }
-            std::printf("EMULATOR_SRAM_SAVED bytes=%zu hash=%016llx file=%s\n",size,static_cast<unsigned long long>(hash),save_file.c_str()); std::fflush(stdout);
+        const std::array<unsigned,2> ids{RETRO_MEMORY_SAVE_RAM,RETRO_MEMORY_RTC};
+        for(std::size_t i=0;i<ids.size();++i) try {
+            const auto* bytes=static_cast<const char*>(core.get_memory_data(ids[i]));
+            const auto size=core.get_memory_size(ids[i]);
+            if(!battery_saves[i].save(bytes,size)) continue;
+            std::uint64_t hash=14695981039346656037ULL;
+            for(std::size_t j=0;j<size;++j) { hash^=static_cast<unsigned char>(bytes[j]);hash*=1099511628211ULL; }
+            std::printf("EMULATOR_%s_SAVED bytes=%zu hash=%016llx file=%s\n",i==0?"SRAM":"RTC",size,
+                        static_cast<unsigned long long>(hash),
+                        (fs::path(save_directory)/(i==0?"save.srm":"save.rtc")).c_str());
+            std::fflush(stdout);
         } catch(const std::exception& e) { error(e.what()); }
     }
     static void atomic_write(const std::string& path,const char* bytes,std::size_t size) {
@@ -662,7 +664,9 @@ struct Frontend {
         if(options.probe) return 0;
         prepare_directories();
         if(!SDL_Init(SDL_INIT_VIDEO|SDL_INIT_GAMEPAD|(options.audio ? SDL_INIT_AUDIO : 0))) throw std::runtime_error(SDL_GetError());
+        SDL_AddGamepadMappingsFromFile("/usr/share/surface/gamecontrollerdb.txt");
         SDL_AddGamepadMappingsFromFile("/data/config/gamecontrollerdb.txt");
+        if(const char* personal=std::getenv("SDL_GAMECONTROLLERCONFIG_FILE"))SDL_AddGamepadMappingsFromFile(personal);
         std::signal(SIGTERM,request_stop); std::signal(SIGINT,request_stop);
         core.set_environment(environment_callback); core.set_video_refresh(video_callback); core.set_audio_sample(sample_callback); core.set_audio_sample_batch(batch_callback);
         core.set_input_poll(input_poll); core.set_input_state(input_callback);

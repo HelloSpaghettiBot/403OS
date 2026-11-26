@@ -262,3 +262,28 @@ class ButtonTapTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class QueuedSleepTests(unittest.TestCase):
+    def test_one_request_survives_storage_contention_without_another_tap(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        now = [0.0]
+        def advance(timeout=None):
+            now[0] += .25
+            return []
+        selector = MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.side_effect = advance
+        requested = Mock(side_effect=[True] + [False] * 30)
+        with patch.object(power, 'guard'), patch.object(power, 'INPUT', Path(temporary.name)), \
+                patch.object(power.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(power.selectors, 'PollSelector', return_value=selector), \
+                patch.object(power, 'suspend', side_effect=[power.StorageBusy('busy'), power.StorageBusy('busy'), 'mem']) as suspend:
+            power.watch(lambda: now[0] >= 4, requested)
+        self.assertEqual(suspend.call_count, 3)
+
+    def test_ui_sleep_only_queues_instead_of_bypassing_button_wake_suppression(self):
+        with patch.object(power, 'request_sleep') as queue, patch.object(power, 'suspend') as direct:
+            self.assertEqual(power.main(['--sleep']), 0)
+        queue.assert_called_once()
+        direct.assert_not_called()

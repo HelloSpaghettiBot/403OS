@@ -26,7 +26,11 @@ the write but omits target readback and records `WRITTEN_UNVERIFIED`, with
 `full_image_readback=SKIPPED_BY_EXPLICIT_REQUEST`. This result is not a verified
 flash; source checks, target identity and exclusive-access guards still apply.
 
-DATA remains 4 GiB and excess capacity is unused. This is not secure erasure.
+After the image has passed full readback, the writer expands the USB's final
+DATA partition and ext4 filesystem to use the remaining capacity. This leaves
+room on the same USB for the installer payload, game library, and verified
+system-update backups. A failed expansion is recorded as a failed write and
+must be repaired before relying on the USB. This is not secure erasure.
 Metadata backups cannot restore overwritten files. An interrupted write may
 require a fresh complete verified flash.
 

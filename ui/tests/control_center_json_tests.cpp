@@ -51,10 +51,10 @@ void bluetoothPairingProtocolTests() {
 
     // Only the helper's post-info completion readback permits success. A
     // successful pair command or a property-change notification is not enough.
-    const std::string complete=R"({"event":"complete","status":"PASS","paired":true,"trusted":true,"connected":true})";
+    const std::string complete=R"({"event":"complete","status":"PASS","paired":true,"trusted":true,"connected":true,"input_ready":true})";
     assert(bluetoothCompleted(complete,true));
     assert(bluetoothCompleted(complete,false));
-    for(const auto* flag:{"paired","trusted","connected"}) {
+    for(const auto* flag:{"paired","trusted","connected","input_ready"}) {
         const std::string field=surface::jsonQuote(flag)+":true";
         auto missing=complete;
         missing.erase(missing.find(field),field.size());
@@ -64,13 +64,13 @@ void bluetoothPairingProtocolTests() {
         assert(!bluetoothCompleted(rejected,true));
     }
     for(const auto* invalid:{R"({"event":"complete","status":"PASS"})",
-        R"({"event":"phase","status":"PASS","paired":true,"trusted":true,"connected":true})",
-        R"({"event":"complete","status":"FAIL","paired":true,"trusted":true,"connected":true})",
-        R"({"event":"complete","paired":true,"trusted":true,"connected":true})"}) {
+        R"({"event":"phase","status":"PASS","paired":true,"trusted":true,"connected":true,"input_ready":true})",
+        R"({"event":"complete","status":"FAIL","paired":true,"trusted":true,"connected":true,"input_ready":true})",
+        R"({"event":"complete","paired":true,"trusted":true,"connected":true,"input_ready":true})"}) {
         assert(!bluetoothCompleted(invalid,true));
         assert(!bluetoothCompleted(invalid,false));
     }
-    assert(bluetoothCompleted(R"({"event":"complete","status":"PASS","connected":true})",false));
+    assert(bluetoothCompleted(R"({"event":"complete","status":"PASS","connected":true,"input_ready":true})",false));
     assert(!bluetoothCompleted(R"({"event":"complete","status":"PASS","paired":true,"trusted":true,"connected":false})",false));
 }
 void persistentCommandInputTests() {
@@ -157,12 +157,15 @@ int main() {
     assert(bluetooth[0].label()=="Player controller (33:44:66)");
     assert(bluetoothInfoName("Device "+btAddress+" (public)\n\tName: ipega PG-9087\n\tAlias: 00-11-22-33-44-66\n",btAddress)=="ipega PG-9087");
     assert(bluetoothInfoName("\tName: Original name\n\tAlias: Custom controller\n",btAddress)=="Custom controller");
+    assert(bluetoothInfoName("\tName: Unidentified\n\tAlias: Unknown\n\tModalias: bluetooth:v1949p0402d0000\n",btAddress)=="iPega PG-9023");
+    assert(bluetoothInfoName("\tName: Unidentified\n\tAlias: Unknown\n\tModalias: bluetooth:v1949p9999d0000\n",btAddress)=="iPega controller");
     assert(bluetoothDevices(bluetooth,"Device aa:bb:cc:dd:ee:ff Pokémon controller\n"));
     assert(bluetooth[1].mac=="AA:BB:CC:DD:EE:FF" && bluetooth[1].name=="Pokémon controller");
     assert(!bluetoothDevices(bluetooth,"garbage Device 00:11:22:33:44:55 Invalid\n[CHG] Device 00:11:22:33:44:55 Connected: yes\nDevice invalid Unknown\n"));
     assert(bluetoothDevices(bluetooth,"[DEL] Device "+btAddress+" Player controller\n"));
     assert(bluetooth.size()==1 && bluetooth[0].name=="Pokémon controller");
     assert(surface::control_detail::bluetoothName("  <unknown>  ",btAddress).empty());
+    assert(surface::control_detail::bluetoothName(" Unidentified ",btAddress).empty());
     assert(surface::control_detail::bluetoothName(" 00-11-22-33-44-66 ",btAddress).empty());
     assert(surface::control_detail::bluetoothName(std::string(249,'x'),btAddress).empty());
     assert(surface::control_detail::bluetoothName(" Game\tpad\x7f ",btAddress)=="Gamepad");

@@ -295,23 +295,40 @@ def session(settings,renderer):
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     running=[True]
     for signum in (signal.SIGTERM,signal.SIGINT):signal.signal(signum,lambda *_:running.__setitem__(0,False))
-    compositor=shell=None;accepted=False;failures=0;signature=None;rotation=Rotation(settings)
+    compositor=shell=None;accepted=False;failures=0;display_failures=0;signature=None;rotation=Rotation(settings)
     runtime=settings.runtime.parent;socket=runtime/'wayland-0';config=runtime/'weston-display.ini'
     serial=SERIAL.open('ab',buffering=0)
+    def pause(seconds):
+        deadline=time.monotonic()+seconds
+        while running[0] and time.monotonic()<deadline:
+            time.sleep(min(.2,deadline-time.monotonic()))
+    def recover(message):
+        nonlocal compositor,shell,display_failures
+        terminate(shell);shell=None;terminate(compositor);compositor=None
+        display_failures=min(display_failures+1,5)
+        delay=min(30,2**display_failures)
+        print(message+f'; restarting display in {delay}s',flush=True)
+        pause(delay)
     try:
         while running[0]:
-            outputs=inventory();chosen=settings.active(outputs)
+            try: outputs=inventory()
+            except OSError:
+                recover('Display inventory temporarily unavailable');continue
+            chosen=settings.active(outputs)
             desired=json.dumps(chosen,sort_keys=True)
             trial=settings.trial(outputs)
             if settings.pending.exists() and trial is None:
                 settings.revert('Unconfirmed or unavailable resolution reverted automatically.')
             if compositor is None or desired!=signature:
                 terminate(shell);shell=None;terminate(compositor);compositor=None
+                if socket.is_socket():socket.unlink(missing_ok=True)
                 config.write_text(weston_config(outputs,chosen));os.chmod(config,0o600)
                 command=['weston','--backend=drm','--renderer='+renderer,'--xwayland',
                     '--socket=wayland-0','--config='+str(config),'--log=/data/logs/weston.log']
                 if orientation.MODULE.is_file():command.append('--modules='+str(orientation.MODULE))
-                compositor=subprocess.Popen(command,start_new_session=True)
+                try: compositor=subprocess.Popen(command,start_new_session=True)
+                except OSError:
+                    recover('Could not start the display process');continue
                 rotation.reset_compositor()
                 signature=desired
                 ready=False
@@ -325,19 +342,20 @@ def session(settings,renderer):
                         if trial:settings.revert('The selected resolution could not start; restored the previous mode.')
                         else:settings.config.unlink(missing_ok=True);settings.revert('Saved mode could not start; using the preferred resolution.')
                         continue
-                    raise RuntimeError('Weston failed to start in the preferred display mode')
+                    recover('Display failed to start in the preferred mode');continue
                 if not accepted:
                     if VM_DMI.read_text().strip()=='Surface Go OS Disposable Test VM':
                         subprocess.run(['/usr/sbin/surface-app-check'],check=False,stdout=serial,stderr=subprocess.STDOUT)
                     accepted=True
-                failures=0
+                failures=0;display_started=time.monotonic()
             if compositor.poll() is not None:
                 if chosen:
                     terminate(shell);shell=None;terminate(compositor);compositor=None
                     if trial:settings.revert('Display process stopped; restored the previous resolution.')
                     else:settings.config.unlink(missing_ok=True)
                     continue
-                raise RuntimeError('Weston stopped unexpectedly')
+                recover('Display stopped unexpectedly');continue
+            if time.monotonic()-display_started>60:display_failures=0
             rotation.update(outputs,trial)
             if shell is None:
                 shell=subprocess.Popen(['/usr/bin/surface-shell'],start_new_session=True,stdout=serial,stderr=subprocess.STDOUT);shell_started=time.monotonic()
@@ -345,8 +363,7 @@ def session(settings,renderer):
                 duration=time.monotonic()-shell_started
                 print(f'shell exited status={shell.returncode} duration={duration:.1f}',flush=True)
                 failures=failures+1 if duration<10 else 0
-                if failures>=5:raise RuntimeError('Shell crash budget exhausted')
-                shell=None;time.sleep(2)
+                shell=None;pause(min(30,2**min(failures,5)))
             time.sleep(.2)
     finally:
         rotation.close();terminate(shell);terminate(compositor);serial.close();os.close(lock)

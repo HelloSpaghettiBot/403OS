@@ -242,7 +242,12 @@ struct HomeRenderer::Impl {
             const auto& view=*controls;
             rectangle(r,{0,0,ui_width,ui_height},{4,5,15,220});
             rounded(r,{135,135,1330,805},30,{29,29,46,252});
-            text(185,175,view.title,37,white,true);
+            text(185,175,view.title,37,white,true,1035);
+            for(const auto& item:std::array<std::pair<Rect,const char*>,3>{{{{1050,165,100,60},"Up"},{{1160,165,100,60},"Down"},{{1270,165,130,60},"Back"}}}) {
+                if(view.editing && std::string(item.second)!="Back") continue;
+                rounded(r,item.first,12,{49,50,71,255});
+                text(item.first.x+15,item.first.y+18,item.second,23,white);
+            }
             if(view.editing) {
                 rounded(r,{185,252,1230,74},15,{12,15,29,255});
                 const auto input=view.secret?std::string(view.input.size(),'*'):view.input;

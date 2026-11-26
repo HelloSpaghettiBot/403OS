@@ -11,7 +11,13 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 - [x] Game library, search, favorites/history and per-game saves/presets.
 - [x] Automatic local/read-only game-volume discovery, live HOME catalog reload,
   title input and preservation of cached covers during offline refresh.
-- [x] Keyboard/gamepad/touch navigation and controller-mapping fixtures.
+- [x] Keyboard/gamepad/touch navigation, SDL controller mapping, hotplug refresh
+  and virtual-controller mapping fixtures; physical devices remain unverified.
+- [x] iPega PG-9023S keyboard-named D-input classification and model-name
+  fallback, covered by focused udev, Bluetooth-name and mapper fixtures.
+- [x] Mixed keyboard/gamepad iPega permissions, automatic defaults and exact-image
+  QEMU evdev acceptance through unprivileged SDL, mapper capture, HOME and a
+  real NES core (`20261126-080750-live`); physical radio pairing remains pending.
 - [x] First-run administrator setup, password-protected profiles, login/logout
   and private per-profile application storage with unprivileged launches.
 - [x] USB/Bluetooth controller driver configuration and BlueZ classic HID/HOG

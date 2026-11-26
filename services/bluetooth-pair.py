@@ -1,25 +1,28 @@
 #!/usr/bin/python3
-"""Keep a real interactive BlueZ agent alive throughout pairing and connection.
+"""Pair controllers through typed BlueZ D-Bus calls and explicit JSON questions.
 
-The UI exchanges JSON lines with this helper. Raw client output and entered
-credentials are never forwarded or saved. Unlike bluetoothctl's positional
-command mode, its interactive mode exports the agent needed for authentication.
+Device names and diagnostic text are never interpreted as agent requests.
+Only the current org.bluez bus owner may call this session's Agent1 object.
 """
 import argparse
+import asyncio
+import importlib.util
 import json
 import os
+from pathlib import Path
 import re
-import selectors
 import signal
 import subprocess
 import sys
-import tempfile
-import time
 
 ADDRESS = re.compile(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\Z')
-ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)')
-CLIENT = '/usr/bin/bluetoothctl'
 SERVICE = '/usr/sbin/surface-bluetooth'
+AGENT = '/org/surface/PairingAgent'
+DEVICE = 'org.bluez.Device1'
+ADAPTER = 'org.bluez.Adapter1'
+MANAGER = 'org.bluez.AgentManager1'
+PROPERTIES = 'org.freedesktop.DBus.Properties'
+HID_UUIDS = {'00001124-0000-1000-8000-00805f9b34fb', '00001812-0000-1000-8000-00805f9b34fb'}
 MAX_RESPONSE = 2048
 
 
@@ -33,255 +36,361 @@ def json_event(event):
     print(json.dumps(event, ensure_ascii=True), flush=True)
 
 
+def failure(code):
+    code = code.rsplit('.', 1)[-1]
+    messages = {
+        'AuthenticationFailed': 'Bluetooth authentication failed. Put the device back into pairing mode and try again',
+        'AuthenticationRejected': 'The Bluetooth device rejected pairing',
+        'AuthenticationCanceled': 'Bluetooth pairing was canceled',
+        'AuthenticationTimeout': 'The Bluetooth device did not answer the pairing request',
+        'NotReady': 'The Bluetooth adapter is not ready',
+        'ConnectionAttemptFailed': 'The Bluetooth device did not accept the connection',
+        'ProfileUnavailable': ('Bluetooth paired, but the controller did not expose a connectable input profile. '
+                               'Use its PC/Android/HID pairing mode, remove the old pairing, and try again'),
+        'NotAvailable': 'The Bluetooth device is no longer available. Scan again',
+        'Rejected': 'Bluetooth pairing was declined',
+    }
+    return PairingError(messages.get(code, 'Bluetooth could not complete the request (' + code + ')'), code)
+
+
+def input_probe():
+    path = Path('/usr/libexec/surface/bluetooth-input.py')
+    spec = importlib.util.spec_from_file_location('surface_bt_input', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.find_input
+
+
 class PairingSession:
-    """Testable agent session. Only main() may invoke the guarded power action."""
-    def __init__(self, client_argv=None, env=None, emit=json_event, response_fd=0,
-                 timeouts=None):
-        self.client_argv = list(client_argv or [CLIENT])
-        self.env = dict(os.environ if env is None else env)
-        self.emit = emit
-        self.response_fd = response_fd
-        self.timeouts = dict(overall=120, register=12, pair=60, trust=12,
-                             connect=30, info=12, prompt=60)
+    def __init__(self, emit=json_event, response_fd=0, timeouts=None, bus_address=None,
+                 find_input=None):
+        self.emit, self.response_fd = emit, response_fd
+        self.timeouts = dict(overall=220, call=12, pair=60, connect=35, prompt=60, ready=15,
+                             services=20, cable=120)
         self.timeouts.update(timeouts or {})
-        self.process = None
-        self.selector = None
-        self.buffer = b''
-        self.responses = b''
+        self.bus_address, self.find_input = bus_address, find_input
         self.pending = None
+        self.responses = b''
         self.prompt_count = 0
-        self.last_display = None
+        self.tasks = set()
+        self.target = None
+        self.target_name = ''
+        self.adapter_path = None
+        self.cable = False
+        self.cable_authorized = False
+        self.reader_closed = False
+        self.state = 'register'
 
     def event(self, event, message, **fields):
         self.emit(dict(event=event, message=message, **fields))
 
-    def send(self, command):
-        try:
-            self.process.stdin.write(command.encode('utf-8') + b'\n')
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError) as error:
-            raise PairingError('The Bluetooth agent stopped responding', 'client-exited') from error
-
-    def phase(self, name, message, command=None):
-        self.state = name
-        self.phase_deadline = time.monotonic() + self.timeouts[name]
-        self.buffer = b''
-        self.event('phase', message, phase=name)
-        if command:
-            self.send(command)
-
-    def text(self):
-        decoded = ANSI.sub('', self.buffer.decode('utf-8', errors='replace'))
-        return ''.join(c for c in decoded if c in '\n\r\t' or ord(c) >= 32)
-
-    def prompt(self, kind, message, code=None):
-        if self.pending:
-            return
-        self.prompt_count += 1
-        self.pending = dict(id=str(self.prompt_count), kind=kind,
-                            deadline=time.monotonic() + self.timeouts['prompt'])
-        fields = dict(id=self.pending['id'], kind=kind)
-        if code is not None:
-            fields['code'] = code
-        self.event('prompt', message, **fields)
-
-    def agent_output(self, text):
-        # Prompts have no trailing newline; match the actual BlueZ 5.86 strings.
-        if self.pending:
-            return
-        if re.search(r'\[agent\]\s+Enter PIN code:', text):
-            self.prompt('pin', 'Enter the PIN shown by the Bluetooth device')
-        elif re.search(r'\[agent\]\s+Enter passkey \(number in 0-999999\):', text):
-            self.prompt('passkey', 'Enter the passkey shown by the Bluetooth device')
-        else:
-            confirmation = re.search(r'\[agent\]\s+Confirm passkey (\d{6}) \(yes/no\):', text)
-            if confirmation:
-                code = confirmation.group(1)
-                self.prompt('confirm', 'Does the device show passkey ' + code + '?', code)
-            elif re.search(r'\[agent\]\s+(?:Accept pairing|Authorize service [0-9a-fA-F-]+) \(yes/no\):', text):
-                self.prompt('confirm', 'Allow this Bluetooth device to pair or connect?')
-        displays = re.findall(r'\[agent\]\s+(PIN code|Passkey): ([^\r\n]+)', text)
-        if displays:
-            kind, value = displays[-1]
-            # Display callbacks intentionally show a code for entry on the peer.
-            # Do not forward arbitrary client strings, history or user input.
-            if re.fullmatch(r'[ -~]{1,16}', value) and (kind, value) != self.last_display:
-                self.last_display = (kind, value)
-                self.event('message', 'Enter ' + kind.lower() + ' ' + value + ' on the Bluetooth device',
-                           phase=self.state)
-
     def response(self, line):
         try:
             answer = json.loads(line)
-        except (ValueError, UnicodeError) as error:
-            raise PairingError('The pairing response was invalid', 'invalid-response') from error
+        except (ValueError, UnicodeError):
+            raise PairingError('The pairing response was invalid', 'invalid-response')
         if (not isinstance(answer, dict) or set(answer) != {'id', 'value'} or
                 not self.pending or answer.get('id') != self.pending['id'] or
                 not isinstance(answer.get('value'), str)):
             raise PairingError('The pairing response did not match the active request', 'invalid-response')
-        value = answer['value']
-        kind = self.pending['kind']
+        value, kind = answer['value'], self.pending['kind']
         if kind == 'confirm':
             if value not in ('yes', 'no'):
                 raise PairingError('Choose Yes or No to confirm Bluetooth pairing', 'invalid-response')
         elif kind == 'passkey':
-            if not re.fullmatch(r'[0-9]{1,6}', value) or int(value) > 999999:
+            if not re.fullmatch('[0-9]{1,6}', value):
                 raise PairingError('Bluetooth passkeys must contain one to six digits', 'invalid-response')
-        else:
-            try:
-                length = len(value.encode('utf-8'))
-            except UnicodeError as error:
-                raise PairingError('The Bluetooth PIN contained invalid text', 'invalid-response') from error
-            if not 1 <= length <= 16 or any(ord(c) < 32 or ord(c) == 127 for c in value):
-                raise PairingError('Bluetooth PINs must contain 1 to 16 bytes without control characters', 'invalid-response')
-        self.pending = None
-        # Remove the answered prompt before readline redraws it. Responses are
-        # never included in events or diagnostics.
-        self.buffer = b''
-        self.send(value)
-        if kind == 'confirm' and value == 'no':
-            raise PairingError('Bluetooth pairing was declined', 'rejected')
-        self.event('phase', 'Waiting for the Bluetooth device', phase=self.state)
+        elif (not 1 <= len(value.encode('utf-8')) <= 16 or
+              any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise PairingError('Bluetooth PINs must contain 1 to 16 bytes without control characters', 'invalid-response')
+        if not self.pending['future'].done():
+            self.pending['future'].set_result(value)
 
-    def check_output(self, address, pair):
-        text = self.text()
-        if re.search(r'(?:^|[\r\n])(?:\[[^\]\r\n]{0,248}\][>#]\s*)?(?:Failed to (?:pair|connect|register agent)|Agent registration failed|Changing .* failed|No default controller available|Device .* not available|Request canceled|Agent released)', text):
-            known = re.search(r'org\.bluez\.Error\.([A-Za-z]+)', text)
-            suffix = known.group(1) if known else ''
-            if self.state == 'pair' and suffix == 'AlreadyExists':
-                self.phase('trust', 'Trusting the paired Bluetooth device', 'trust ' + address)
-                return None
-            if self.state == 'connect' and suffix == 'AlreadyConnected':
-                self.phase('info', 'Checking the Bluetooth connection', 'info ' + address)
-                return None
-            messages = {
-                'AuthenticationFailed': 'Bluetooth authentication failed. Put the device back into pairing mode and try again',
-                'AuthenticationRejected': 'The Bluetooth device rejected pairing',
-                'AuthenticationCanceled': 'Bluetooth pairing was canceled',
-                'AuthenticationTimeout': 'The Bluetooth device did not answer the pairing request',
-                'NotReady': 'The Bluetooth adapter is not ready',
-                'ConnectionAttemptFailed': 'The Bluetooth device did not accept the connection',
-                'NotAvailable': 'The Bluetooth device is no longer available. Scan again',
-            }
-            raise PairingError(messages.get(suffix, 'Bluetooth could not complete the ' + self.state + ' step'),
-                               suffix or 'client-failed')
-        if self.state == 'register' and re.search(r'(?:^|[\r\n])Agent registered(?:[\r\n]|$)', text):
-            if pair:
-                self.phase('pair', 'Pairing with the Bluetooth device', 'pair ' + address)
-            else:
-                self.phase('connect', 'Connecting the Bluetooth device', 'connect ' + address)
-            return None
-        self.agent_output(text)
-        if self.state == 'pair' and re.search(r'(?:^|[\r\n])Pairing successful(?:[\r\n]|$)', text):
-            self.phase('trust', 'Trusting the paired Bluetooth device', 'trust ' + address)
-        elif self.state == 'trust' and re.search(r'(?:^|[\r\n])Changing ' + re.escape(address) + r' trust succeeded(?:[\r\n]|$)', text, re.I):
-            self.phase('connect', 'Connecting the Bluetooth device', 'connect ' + address)
-        elif self.state == 'connect' and re.search(r'(?:^|[\r\n])Connection successful(?:[\r\n]|$)', text):
-            self.phase('info', 'Checking the Bluetooth connection', 'info ' + address)
-        elif self.state == 'info':
-            # A property-change notification alone cannot satisfy this check.
-            # Only parse the output following this device's info header.
-            header = re.search(r'(?:^|[\r\n])Device ' + re.escape(address) + r'(?:\s|$)', text, re.I)
-            if header:
-                values = {name.lower(): value == 'yes' for name, value in
-                          re.findall(r'^\s*(Paired|Trusted|Connected): (yes|no)\s*$',
-                                     text[header.end():], re.M)}
-                required = ('paired', 'trusted', 'connected') if pair else ('connected',)
-                if all(name in values for name in required):
-                    if not all(values[name] for name in required):
-                        raise PairingError('Bluetooth completed the request without a confirmed ' +
-                                           ('paired, trusted connection' if pair else 'connection'), 'readback-failed')
-                    return dict(paired=values.get('paired', False),
-                                trusted=values.get('trusted', False), connected=values['connected'])
-        return None
-
-    def cleanup(self):
-        if self.process is not None:
-            try:
-                # Signal the group even if its leader exited: a child must not
-                # survive an unexpectedly terminated client.
-                os.killpg(self.process.pid, signal.SIGTERM)
-                if self.process.poll() is None:
-                    try:
-                        self.process.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(self.process.pid, signal.SIGKILL)
-                        self.process.wait(timeout=1)
-            except ProcessLookupError:
-                self.process.wait(timeout=1)
-            finally:
-                self.process.stdin.close()
-                self.process.stdout.close()
-        if self.selector is not None:
-            self.selector.close()
-
-    def run(self, address, pair=True):
-        if not ADDRESS.fullmatch(address):
-            raise PairingError('The Bluetooth address is invalid', 'invalid-address')
-        address = address.upper()
-        started = time.monotonic()
+    def read_response(self):
         try:
-            # BlueZ readline can save history; this private ephemeral directory
-            # prevents credentials from ever reaching a persistent history file.
-            with tempfile.TemporaryDirectory(prefix='surface-bluetooth-agent-') as private_home:
-                environment = dict(self.env, LC_ALL='C', LANG='C', TERM='dumb',
-                                   HOME=private_home, XDG_CACHE_HOME=private_home)
-                self.process = subprocess.Popen(self.client_argv + ['--agent', 'KeyboardDisplay'],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    env=environment, start_new_session=True, bufsize=0)
-                self.selector = selectors.PollSelector()
-                self.selector.register(self.process.stdout, selectors.EVENT_READ, 'client')
-                if self.response_fd is not None:
-                    self.selector.register(self.response_fd, selectors.EVENT_READ, 'response')
-                self.phase('register', 'Starting the Bluetooth pairing agent')
-                while True:
-                    now = time.monotonic()
-                    if now - started >= self.timeouts['overall'] or now >= self.phase_deadline:
-                        raise PairingError('Bluetooth timed out during the ' + self.state + ' step. Put the device in pairing mode and try again', 'timeout')
-                    if self.pending and now >= self.pending['deadline']:
-                        raise PairingError('The Bluetooth pairing question was not answered in time', 'timeout')
-                    for key, _ in self.selector.select(timeout=0.1):
-                        if key.data == 'client':
-                            chunk = os.read(self.process.stdout.fileno(), 8192)
-                            if not chunk:
-                                raise PairingError('The Bluetooth pairing agent exited before completion', 'client-exited')
-                            self.buffer = (self.buffer + chunk)[-65536:]
-                            result = self.check_output(address, pair)
-                            if result is not None:
-                                self.event('complete', 'Bluetooth device connected', status='PASS', **result)
-                                return result
-                        else:
-                            chunk = os.read(self.response_fd, MAX_RESPONSE + 1)
-                            if not chunk:
-                                self.selector.unregister(self.response_fd)
-                                if self.pending:
-                                    raise PairingError('The Bluetooth pairing question was closed', 'canceled')
-                                continue
-                            self.responses += chunk
-                            if len(self.responses) > MAX_RESPONSE:
-                                raise PairingError('The pairing response was too large', 'invalid-response')
-                            while b'\n' in self.responses:
-                                line, self.responses = self.responses.split(b'\n', 1)
-                                self.response(line)
-                    if self.process.poll() is not None:
-                        # Drain any final output before reporting an exit.
-                        chunk = os.read(self.process.stdout.fileno(), 8192)
-                        if chunk:
-                            self.buffer = (self.buffer + chunk)[-65536:]
-                            result = self.check_output(address, pair)
-                            if result is not None:
-                                self.event('complete', 'Bluetooth device connected', status='PASS', **result)
-                                return result
-                        raise PairingError('The Bluetooth pairing agent exited before completion', 'client-exited')
-        except PairingError as error:
-            self.event('error', str(error), code=error.code)
-            raise
-        except OSError as error:
-            failure = PairingError('The Bluetooth pairing agent could not be started or contacted', 'client-unavailable')
-            self.event('error', str(failure), code=failure.code)
-            raise failure from error
+            chunk = os.read(self.response_fd, MAX_RESPONSE + 1)
+            if not chunk:
+                asyncio.get_running_loop().remove_reader(self.response_fd)
+                self.reader_closed = True
+                if self.pending:
+                    raise PairingError('The Bluetooth pairing question was closed', 'canceled')
+                return
+            self.responses += chunk
+            if len(self.responses) > MAX_RESPONSE:
+                raise PairingError('The pairing response was too large', 'invalid-response')
+            while b'\n' in self.responses:
+                line, self.responses = self.responses.split(b'\n', 1)
+                self.response(line)
+        except (OSError, ValueError, UnicodeError) as error:
+            self.abort = error if isinstance(error, PairingError) else PairingError('Invalid pairing input', 'invalid-response')
+            if self.pending and not self.pending['future'].done():
+                self.pending['future'].set_exception(self.abort)
+
+    async def question(self, kind, message, code=None):
+        if self.pending or self.reader_closed:
+            raise PairingError('The Bluetooth pairing question is unavailable', 'canceled')
+        self.prompt_count += 1
+        future = asyncio.get_running_loop().create_future()
+        self.pending = dict(id=str(self.prompt_count), kind=kind, future=future)
+        fields = dict(id=self.pending['id'], kind=kind)
+        if code is not None:
+            fields['code'] = code
+        self.event('prompt', message, **fields)
+        try:
+            value = await asyncio.wait_for(future, self.timeouts['prompt'])
+            if kind == 'confirm' and value == 'no':
+                raise PairingError('Bluetooth pairing was declined', 'rejected')
+            return value
+        except asyncio.TimeoutError:
+            raise PairingError('The Bluetooth pairing question was not answered in time', 'timeout')
         finally:
-            self.cleanup()
+            self.pending = None
+            self.event('prompt-ended', 'Bluetooth pairing question closed')
+
+    async def call(self, path, interface, member, signature='', body=None, seconds=None):
+        message = self.Message(destination=self.owner, path=path, interface=interface,
+                               member=member, signature=signature, body=body or [])
+        task = asyncio.create_task(self.bus.call(message))
+        remaining = self.timeouts['call'] if seconds is None else seconds
+        try:
+            # Prompt time is separate from the operation deadline. The global
+            # deadline still bounds the entire session, including all questions.
+            while not task.done():
+                if self.abort:
+                    raise self.abort
+                start = asyncio.get_running_loop().time()
+                await asyncio.wait({task}, timeout=min(.05, max(0, remaining)))
+                if self.pending is None:
+                    remaining -= asyncio.get_running_loop().time() - start
+                if remaining <= 0 and not task.done():
+                    raise PairingError('Bluetooth timed out during the ' + self.state + ' step', 'timeout')
+            reply = task.result()
+            if reply.message_type == self.MessageType.ERROR:
+                if self.abort:
+                    raise self.abort
+                raise failure(reply.error_name)
+            return reply.body
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    def incoming(self, message):
+        if message.message_type != self.MessageType.METHOD_CALL or message.path != AGENT:
+            return False
+        if message.sender != self.owner or message.interface != 'org.bluez.Agent1':
+            return self.Message.new_error(message, 'org.bluez.Error.Rejected', 'Not authorized')
+        signatures = {'Release': '', 'Cancel': '', 'RequestPinCode': 'o',
+                      'RequestPasskey': 'o', 'RequestConfirmation': 'ou',
+                      'RequestAuthorization': 'o', 'AuthorizeService': 'os',
+                      'DisplayPinCode': 'os', 'DisplayPasskey': 'ouq'}
+        if signatures.get(message.member) != message.signature:
+            return self.Message.new_error(message, 'org.bluez.Error.Rejected', 'Invalid agent request')
+        task = asyncio.create_task(self.answer_agent(message))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return True
+
+    async def answer_agent(self, message):
+        try:
+            member, args = message.member, message.body
+            if member in ('Cancel', 'Release'):
+                if self.pending and not self.pending['future'].done():
+                    self.pending['future'].set_exception(PairingError('Bluetooth pairing was canceled', 'canceled'))
+                if member == 'Release':
+                    self.abort = PairingError('The Bluetooth agent was released', 'agent-released')
+                result, signature = [], ''
+            else:
+                peer = str(args[0])
+                if self.cable and self.target is None and member == 'RequestAuthorization':
+                    if not re.fullmatch(re.escape(self.adapter_path) + r'/dev_(?:[0-9A-F]{2}_){5}[0-9A-F]{2}', peer):
+                        raise PairingError('Device is on another Bluetooth adapter', 'rejected')
+                    self.target = peer
+                if peer != self.target:
+                    raise PairingError('The pairing request is for another device', 'rejected')
+                result, signature = [], ''
+                if member == 'RequestPinCode':
+                    if 'ipega' in self.target_name.casefold():
+                        raise PairingError('This iPega controller mode should not request a PIN. Power it off, '
+                                           'forget its old pairing, then hold X + HOME to pair in gamepad mode',
+                                           'ipega-unexpected-pin')
+                    result, signature = [await self.question('pin', 'Enter the PIN shown by the Bluetooth device')], 's'
+                elif member == 'RequestPasskey':
+                    result, signature = [int(await self.question('passkey', 'Enter the passkey shown by the Bluetooth device'))], 'u'
+                elif member == 'RequestConfirmation':
+                    code = f'{args[1]:06d}'
+                    await self.question('confirm', 'Does the device show passkey ' + code + '?', code)
+                elif member in ('RequestAuthorization', 'AuthorizeService'):
+                    if member == 'AuthorizeService' and str(args[1]).lower() not in HID_UUIDS:
+                        raise PairingError('This panel only authorizes Bluetooth input devices', 'rejected')
+                    if self.cable:
+                        self.cable_authorized = True
+                        self.event('message', 'Cable pairing authorized. Unplug the controller and press its PS button to test Bluetooth')
+                elif member in ('DisplayPinCode', 'DisplayPasskey'):
+                    value = str(args[1]) if member == 'DisplayPinCode' else f'{args[1]:06d}'
+                    if not re.fullmatch(r'[ -~]{1,16}', value):
+                        raise PairingError('The device provided an invalid pairing code', 'rejected')
+                    self.event('message', 'Enter code ' + value + ' on the Bluetooth device', phase=self.state)
+            await self.bus.send(self.Message.new_method_return(message, signature, result))
+        except (PairingError, asyncio.CancelledError) as error:
+            if isinstance(error, PairingError) and error.code not in ('rejected',):
+                self.abort = error
+            await self.bus.send(self.Message.new_error(message, 'org.bluez.Error.Rejected', 'Pairing request declined'))
+
+    async def properties(self):
+        result = await self.call(self.target, PROPERTIES, 'GetAll', 's', [DEVICE])
+        return {str(k): v.value for k, v in result[0].items()}
+
+    async def wait_for_services(self):
+        """Wait for BlueZ SDP/GATT resolution before asking it to connect profiles."""
+        deadline = asyncio.get_running_loop().time() + self.timeouts['services']
+        while True:
+            properties = await self.properties()
+            if properties.get('ServicesResolved'):
+                return properties
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise PairingError('Bluetooth paired, but controller service discovery did not finish. '
+                                   'Remove the old pairing, put the controller in PC/Android/HID mode, and retry',
+                                   'services-unresolved')
+            await asyncio.sleep(min(.2, remaining))
+
+    async def operation(self, address, pair, adapter, cable):
+        from dbus_next import BusType, Message, MessageType, Variant
+        from dbus_next.aio import MessageBus
+        self.Message, self.MessageType, self.Variant = Message, MessageType, Variant
+        self.abort = None
+        self.cable = cable
+        self.bus = await MessageBus(bus_address=self.bus_address, bus_type=BusType.SYSTEM).connect()
+        registered = False
+        loop = asyncio.get_running_loop()
+        try:
+            reply = await asyncio.wait_for(self.bus.call(Message(destination='org.freedesktop.DBus',
+                path='/org/freedesktop/DBus', interface='org.freedesktop.DBus', member='GetNameOwner',
+                signature='s', body=['org.bluez'])), self.timeouts['call'])
+            if reply.message_type == MessageType.ERROR:
+                raise PairingError('The Bluetooth service is unavailable', 'service-unavailable')
+            self.owner = reply.body[0]
+            objects = (await self.call('/', 'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects'))[0]
+            available = [(str(path), props[ADAPTER]) for path, props in objects.items() if ADAPTER in props]
+            chosen = next(((path, props) for path, props in available
+                if (not adapter or str(props.get('Address', Variant('s', '')).value).upper() == adapter.upper())
+                and props.get('Powered', Variant('b', False)).value), None)
+            if not chosen:
+                raise PairingError('The selected Bluetooth adapter is unavailable or powered off', 'adapter-not-ready')
+            self.adapter_path = chosen[0]
+            if not cable:
+                self.target = self.adapter_path + '/dev_' + address.upper().replace(':', '_')
+                if self.target not in objects or DEVICE not in objects[self.target]:
+                    raise PairingError('The device is no longer available on this adapter. Scan again', 'NotAvailable')
+            self.bus.add_message_handler(self.incoming)
+            if self.response_fd is not None:
+                loop.add_reader(self.response_fd, self.read_response)
+            # A controller has no keyboard or display. Advertising these as
+            # available can make legacy pads request a PIN the user cannot enter.
+            await self.call('/org/bluez', MANAGER, 'RegisterAgent', 'os', [AGENT, 'NoInputNoOutput'])
+            registered = True
+            if cable:
+                await self.call('/org/bluez', MANAGER, 'RequestDefaultAgent', 'o', [AGENT])
+                self.state = 'cable'
+                self.event('phase', 'Connect a supported PlayStation controller by USB, then approve cable pairing', phase='cable')
+                deadline = loop.time() + self.timeouts['cable']
+                while not self.cable_authorized:
+                    if self.abort:
+                        raise self.abort
+                    if loop.time() >= deadline:
+                        raise PairingError('Cable pairing timed out. Reconnect the controller USB cable and try again', 'timeout')
+                    await asyncio.sleep(.1)
+                address = self.target.rsplit('/dev_', 1)[1].replace('_', ':')
+            elif pair:
+                self.state = 'pair'
+                self.event('phase', 'Pairing with the Bluetooth device', phase='pair')
+                properties = await self.properties()
+                self.target_name = str(properties.get('Name') or properties.get('Alias') or '')
+                if not properties.get('Paired'):
+                    try:
+                        await self.call(self.target, DEVICE, 'Pair', seconds=self.timeouts['pair'])
+                    except PairingError as error:
+                        if error.code != 'AlreadyExists':
+                            raise
+                if not (await self.properties()).get('Paired'):
+                    raise PairingError('Bluetooth did not confirm the pairing', 'readback-failed')
+            if pair or cable:
+                self.state = 'trust'
+                await self.call(self.target, PROPERTIES, 'Set', 'ssv', [DEVICE, 'Trusted', Variant('b', True)])
+            self.state = 'connect'
+            if not cable:
+                # Pair() can return before BlueZ has finished loading the
+                # controller's SDP/GATT services. Connecting in that window
+                # can fail with BREDR.ProfileUnavailable despite HID support.
+                if pair and not (await self.properties()).get('ServicesResolved'):
+                    self.event('phase', 'Discovering the controller input profile', phase='services')
+                    await self.wait_for_services()
+                self.event('phase', 'Connecting the Bluetooth device', phase='connect')
+                try:
+                    await self.call(self.target, DEVICE, 'Connect', seconds=self.timeouts['connect'])
+                except PairingError as error:
+                    if error.code != 'AlreadyConnected':
+                        raise
+            self.state = 'ready'
+            self.event('phase', 'Waiting for the controller input device' if not cable else
+                       'Unplug USB and press PS; waiting for wireless input', phase='ready')
+            find = self.find_input or input_probe()
+            deadline = loop.time() + (self.timeouts['cable'] if cable else self.timeouts['ready'])
+            while True:
+                if self.abort:
+                    raise self.abort
+                properties = await self.properties()
+                connection = bool(properties.get('Connected'))
+                resolved = bool(properties.get('ServicesResolved'))
+                nodes = find(address, require_gamepad=True) if connection and resolved else []
+                # Cable-configured devices may be Trusted without Paired until
+                # their first wireless authentication; never assert Paired early.
+                if nodes and connection and resolved and (not pair or properties.get('Paired')):
+                    if (pair or cable) and not properties.get('Trusted'):
+                        raise PairingError('Bluetooth did not retain controller trust', 'readback-failed')
+                    result = dict(paired=bool(properties.get('Paired')), trusted=bool(properties.get('Trusted')),
+                                  connected=True, input_ready=True, cable=cable)
+                    self.event('complete', 'Bluetooth controller input is ready', status='PASS', **result)
+                    return result
+                if loop.time() >= deadline:
+                    raise PairingError('Bluetooth did not create a working controller input device. Check its controller mode and reconnect', 'input-not-ready')
+                await asyncio.sleep(.2)
+        finally:
+            if self.response_fd is not None:
+                loop.remove_reader(self.response_fd)
+            if self.target and not cable:
+                try:
+                    await asyncio.wait_for(self.bus.call(Message(destination=self.owner, path=self.target,
+                        interface=DEVICE, member='CancelPairing')), 1)
+                except (Exception, asyncio.CancelledError):
+                    pass
+            if registered:
+                try:
+                    await asyncio.wait_for(self.bus.call(Message(destination=self.owner, path='/org/bluez',
+                        interface=MANAGER, member='UnregisterAgent', signature='o', body=[AGENT])), 1)
+                except (Exception, asyncio.CancelledError):
+                    pass
+            for task in list(self.tasks):
+                task.cancel()
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+            self.bus.disconnect()
+            await self.bus.wait_for_disconnect()
+            # dbus-next 0.2.3 shuts down, but does not close its socket.
+            self.bus._sock.close()
+            self.responses = b''
+
+    async def run_async(self, address=None, pair=True, adapter=None, cable=False):
+        if ((not cable and (not isinstance(address, str) or not ADDRESS.fullmatch(address))) or
+                (adapter is not None and not ADDRESS.fullmatch(adapter))):
+            raise PairingError('The Bluetooth address is invalid', 'invalid-address')
+        try:
+            return await asyncio.wait_for(self.operation(address, pair and not cable, adapter, cable), self.timeouts['overall'])
+        except asyncio.TimeoutError:
+            raise PairingError('Bluetooth pairing timed out', 'timeout')
+
+    def run(self, address=None, pair=True, adapter=None, cable=False):
+        return asyncio.run(self.run_async(address, pair, adapter, cable))
 
 
 def main():
@@ -289,37 +398,31 @@ def main():
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--pair', metavar='ADDRESS')
     action.add_argument('--connect', metavar='ADDRESS')
+    action.add_argument('--cable', action='store_true')
+    parser.add_argument('--adapter', metavar='ADDRESS')
     options = parser.parse_args()
-    address = options.pair or options.connect
-    if not ADDRESS.fullmatch(address):
-        json_event(dict(event='error', message='The Bluetooth address is invalid', code='invalid-address'))
-        return 1
-
     def canceled(_signum, _frame):
         raise PairingError('Bluetooth pairing was canceled', 'canceled')
-
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, canceled)
     try:
-        # This is the only power action. The existing helper enforces root,
-        # trusted boot marker, persistent DATA, radio and adapter readiness.
+        address = options.pair or options.connect
+        if (not options.cable and not ADDRESS.fullmatch(address)) or (options.adapter and not ADDRESS.fullmatch(options.adapter)):
+            raise PairingError('The Bluetooth address is invalid', 'invalid-address')
         json_event(dict(event='phase', message='Preparing the Bluetooth adapter', phase='power'))
-        prepared = subprocess.run([SERVICE, '--power-on'], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  timeout=30, check=False, env=dict(os.environ, LC_ALL='C'))
+        prepared = subprocess.run([SERVICE, '--power-on'] + (['--adapter', options.adapter] if options.adapter else []),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=45, check=False, env=dict(os.environ, LC_ALL='C'))
         if prepared.returncode:
             raise PairingError('The Bluetooth adapter could not be prepared. Check Bluetooth diagnostics', 'adapter-not-ready')
-        PairingSession().run(address, pair=bool(options.pair))
+        PairingSession().run(address, pair=bool(options.pair), adapter=options.adapter, cable=options.cable)
         return 0
-    except (PairingError, OSError, subprocess.TimeoutExpired) as error:
+    except (PairingError, OSError, ImportError, subprocess.TimeoutExpired) as error:
         if not isinstance(error, PairingError):
-            error = PairingError('The Bluetooth adapter did not answer the preparation request', 'adapter-not-ready')
-        # Never include client output, MAC addresses, passcodes or entered input
-        # in the diagnostic reason. The privileged helper collects radio logs.
+            error = PairingError('The Bluetooth service could not be contacted', 'service-unavailable')
         try:
             subprocess.run([SERVICE, '--record-error', 'pairing-session-' + error.code[:48]],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=12, check=False)
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass
         json_event(dict(event='error', message=str(error), code=error.code))

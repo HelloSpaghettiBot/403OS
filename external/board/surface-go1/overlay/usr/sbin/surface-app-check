@@ -13,6 +13,7 @@ import http.server
 import json
 import math
 import os
+import pwd
 from pathlib import Path
 import re
 import secrets
@@ -23,6 +24,7 @@ import stat
 import struct
 import subprocess
 import threading
+import tempfile
 import time
 import urllib.parse
 import wave
@@ -74,10 +76,15 @@ def stop_group(process,grace=5):
         return process.wait(timeout=2)
 
 
-def command(argv,log,timeout=10,env=None,tail=False):
+def command(argv,log,timeout=10,env=None,tail=False,user=None):
+    credentials={}
+    if user is not None:
+        account=pwd.getpwnam(user)
+        credentials=dict(user=account.pw_uid,group=account.pw_gid,
+                         extra_groups=os.getgrouplist(user,account.pw_gid))
     with log.open('wb') as output:
         process=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,
-                                 env=env,start_new_session=True)
+                                 env=env,start_new_session=True,**credentials)
         try:code=process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             stop_group(process);raise RuntimeError('command exceeded its time limit')
@@ -87,11 +94,11 @@ def command(argv,log,timeout=10,env=None,tail=False):
     return code,text
 
 
-def proton_requested():
+def vm_test_options():
     """Read only a fixed, bounded request on the exact VM's read-only 9p share."""
     try:product=VM_DMI.read_text().strip()
-    except OSError:return False
-    if product!=VM_NAME:return False  # Never inspect test requests on hardware.
+    except OSError:return {'test_proton':False,'test_ipega':False}
+    if product!=VM_NAME:return {'test_proton':False,'test_ipega':False}  # Never inspect test requests on hardware.
     mounted=False
     for line in MOUNT_INFO.read_text().splitlines():
         fields=line.split()
@@ -104,7 +111,7 @@ def proton_requested():
             raise RuntimeError('test options must be the read-only, noexec surface_test_options 9p share')
         if mounted:raise RuntimeError('test options mount is ambiguous')
         mounted=True
-    if not mounted:return False
+    if not mounted:return {'test_proton':False,'test_ipega':False}
     directory=os.open(TEST_OPTIONS,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
         if not os.fstatvfs(directory).f_flag&os.ST_RDONLY:
@@ -123,10 +130,88 @@ def proton_requested():
                 value[key]=item
             return value
         request=json.loads(raw,object_pairs_hook=unique_fields)
-        if not isinstance(request,dict) or set(request)!={'schema','test_proton'} or request['schema']!='surface-vm-test-options-v1' or type(request['test_proton']) is not bool:
+        allowed=({'schema','test_proton'},{'schema','test_proton','test_ipega'})
+        if (not isinstance(request,dict) or set(request) not in allowed or
+                request['schema']!='surface-vm-test-options-v1' or type(request['test_proton']) is not bool or
+                ('test_ipega' in request and type(request['test_ipega']) is not bool)):
             raise RuntimeError('test request has an unknown schema, extra commands or non-boolean flag')
-        return request['test_proton']
+        return {'test_proton':request['test_proton'],'test_ipega':request.get('test_ipega',False)}
     finally:os.close(directory)
+
+
+def proton_requested():return vm_test_options()['test_proton']
+def ipega_requested():return vm_test_options()['test_ipega']
+
+
+def ipega_check(run):
+    guard()
+    if not ipega_requested():raise RuntimeError('iPega probe requires an explicit read-only VM test request')
+    environment=dict(os.environ,SDL_VIDEO_DRIVER='dummy',SDL_VIDEODRIVER='dummy',
+                     SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS='1',SURFACE_VM_IPEGA_TEST='1')
+    nodes=[node for node in Path('/sys/class/input').glob('event*')
+           if (node/'device/name').read_text().strip()=='PG-9023S Keyboard' and
+           (node/'device/id/vendor').read_text().strip()=='1949' and
+           (node/'device/id/product').read_text().strip()=='0402']
+    if len(nodes)!=1:raise RuntimeError('Expected exactly one synthetic iPega kernel input device')
+    node=nodes[0]
+    override=Path('/run/udev/rules.d/72-surface-gamepad.rules')
+    override.parent.mkdir(exist_ok=True,parents=True)
+    # Reproduce the previous rule on the exact same kernel device first.
+    # Bind the previous rule over the packaged file only in this requested VM.
+    # /etc takes priority over /run for files with the same name.
+    legacy=Path('/etc/udev/rules.d/72-surface-gamepad.rules').read_text().replace(
+        'KERNEL=="event[0-9]*", ATTRS{id/vendor}=="1949",',
+        'KERNEL=="event[0-9]*", ENV{ID_INPUT_JOYSTICK}!="1", ENV{ID_INPUT_KEYBOARD}=="1", ATTRS{id/vendor}=="1949",')
+    def reclassify(label):
+        subprocess.run(['udevadm','control','--reload-rules'],check=True,timeout=5)
+        subprocess.run(['udevadm','trigger','--action=add',str(node)],check=True,timeout=5)
+        subprocess.run(['udevadm','settle','--timeout=5'],check=True,timeout=6)
+        properties=subprocess.check_output(['udevadm','info','--query=property','--path='+str(node)],text=True,timeout=5)
+        (run/('ipega-'+label+'-udev.log')).write_text(properties)
+        return dict(line.split('=',1) for line in properties.splitlines() if '=' in line)
+    descriptor=os.open(override,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    bound=False
+    try:
+        with os.fdopen(descriptor,'w') as output:output.write(legacy)
+        subprocess.run(['mount','--bind',str(override),'/etc/udev/rules.d/72-surface-gamepad.rules'],check=True,timeout=5)
+        bound=True
+        properties=reclassify('previous')
+        if properties.get('ID_INPUT_JOYSTICK')!='1' or properties.get('ID_INPUT_KEYBOARD')!='1':
+            raise RuntimeError('The synthetic HID did not reproduce mixed keyboard/gamepad classification')
+        code,output=command(['/usr/bin/surface-controller-setup','--vm-ipega-probe'],
+                            run/'ipega-previous-sdl.log',timeout=15,env=environment,tail=True,user='gaming')
+        if code==0 or 'reason=not-enumerated-by-SDL' not in output:
+            raise RuntimeError('The previous controller permissions bug was not reproduced')
+        emit('SURFACE_IPEGA_REGRESSION_REPRODUCED',reason='mixed_keyboard_joystick_denied_to_gaming')
+    finally:
+        if bound:subprocess.run(['umount','/etc/udev/rules.d/72-surface-gamepad.rules'],check=True,timeout=5)
+        override.unlink(missing_ok=True)
+        properties=reclassify('corrected')
+    if properties.get('ID_INPUT_JOYSTICK')!='1' or properties.get('ID_INPUT_KEYBOARD')!='0':
+        raise RuntimeError('The packaged correction did not reclassify the mixed-mode controller')
+    emit('SURFACE_IPEGA_PROBE_READY')
+    code,output=command(['/usr/bin/surface-controller-setup','--vm-ipega-probe'],
+                        run/'ipega-sdl-probe.log',timeout=15,env=environment,tail=True,user='gaming')
+    print(output,flush=True)
+    if code!=0 or 'SURFACE_IPEGA_DEVICE ' not in output or 'SURFACE_IPEGA_INPUT_PASS ' not in output:
+        raise RuntimeError('Fake iPega did not enumerate, open as the gaming user, map by default and deliver its button input; inspect ipega-sdl-probe.log')
+    account=pwd.getpwnam('gaming')
+    work=Path(tempfile.mkdtemp(prefix='ipega-vm-',dir='/data'))
+    os.chown(work,account.pw_uid,account.pw_gid)
+    emulator=['/usr/bin/surface-emulator','--core','/usr/lib/libretro/fceumm_libretro.so',
+              '--rom','/usr/share/surface-tests/input.nes','--system-dir',str(work),
+              '--windowed','--no-audio','--frames','180']
+    for label in ('baseline','controller'):
+        if label=='controller':emit('SURFACE_IPEGA_EMULATOR_READY')
+        code,output=command(emulator+['--save-dir',str(work/label),'--screenshot',str(work/(label+'.bmp'))],
+                            run/('ipega-emulator-'+label+'.log'),timeout=15,env=environment,tail=True,user='gaming')
+        if code!=0:raise RuntimeError('Unprivileged emulator failed its iPega input test: '+output[-512:])
+    if (work/'baseline.bmp').read_bytes()==(work/'controller.bmp').read_bytes():
+        raise RuntimeError('Actual iPega input did not change the real NES core framebuffer')
+    emit('SURFACE_IPEGA_EMULATOR_INPUT_PASS',synthetic_input=False)
+    return {'status':'PASS','mode':'QEMU virtio-input-host fake Bluetooth HID through guest udev, unprivileged SDL and default gamepad mapping',
+            'input_log':str(run/'ipega-sdl-probe.log'),'previous_rule_failure_reproduced':True,
+            'real_core_framebuffer_changed':True,'work_directory':str(work)}
 
 
 def last_event(output):
@@ -709,18 +794,24 @@ def main():
     run.mkdir(parents=True,mode=0o700)
     checks={'installer':lambda:installer_check(run),'tailscale':lambda:tailscale_check(run,boot_id),'moonlight':lambda:moonlight_check(run),'wine':lambda:wine_check(run),
             'audio':lambda:audio_check(run),'browser':lambda:browser_check(run,max(0,min(args.browser_hold,60))),
-            'proton':lambda:proton_check(run)}
+            'proton':lambda:proton_check(run),'ipega':lambda:ipega_check(run)}
     results={'boot_id':boot_id,'checks':{},'evidence_directory':str(run),'scope':'guest runtime; no Surface hardware, enrollment or streaming pass'}
     components=args.components.split(',')
     try:
-        requested=proton_requested()
+        test_options=vm_test_options()
+        requested=test_options['test_proton']
+        requested_ipega=test_options['test_ipega']
         results['proton_requested']=requested
+        results['ipega_requested']=requested_ipega
         emit('SURFACE_PROTON_REQUEST',requested=requested)
+        emit('SURFACE_IPEGA_REQUEST',requested=requested_ipega)
         components=selected_components(args.components,requested)
+        if requested_ipega:components.append('ipega')
     except (OSError,ValueError,RuntimeError) as error:
         results['proton_requested']=False
         results['checks']['proton']={'status':'FAIL','reason':str(error)}
         emit('SURFACE_PROTON_FAIL',reason=error)
+        emit('SURFACE_IPEGA_FAIL',reason=error)
         components=[component for component in components if component!='proton']
     for component in components:
         if component not in checks:

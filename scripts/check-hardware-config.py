@@ -40,6 +40,7 @@ REQUIRED = {
 }
 FIRMWARE = ('qca/rampatch_usb_00000302.bin', 'qca/nvm_usb_00000302.bin')
 MODULES = {'BT_HCIBTUSB': 'btusb'}
+BLUEZ_PLUGINS = ('hid', 'hog', 'sixaxis')
 
 
 def read_config(path):
@@ -101,7 +102,7 @@ def check(config, target=None):
 def check_bluez(config, log):
     """Check the selected plugins and the daemon's actual configure invocation."""
     failures = []
-    for plugin in ('hid', 'hog'):
+    for plugin in BLUEZ_PLUGINS:
         name = 'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_' + plugin.upper()
         if config is None or config.get(name) != 'y':
             failures.append(dict(group='bluetooth-plugins', symbol=name,
@@ -117,7 +118,7 @@ def check_bluez(config, log):
         failures.append(dict(group='bluetooth-plugins', required='one actual BlueZ configure invocation in config.log'))
         return failures
     arguments = commands[0][1:]
-    for plugin in ('hid', 'hog'):
+    for plugin in BLUEZ_PLUGINS:
         disabled = any(argument == '--disable-' + plugin or argument.startswith('--disable-' + plugin + '=') or
                        argument == '--enable-' + plugin + '=no' for argument in arguments)
         if '--enable-' + plugin not in arguments or disabled:

@@ -110,7 +110,7 @@ int main() {
         center.navigate(Action::Up); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().busy);
-        select(center,"Configure controller buttons"); center.navigate(Action::Accept);
+        select(center,"Controllers and button mapping"); center.navigate(Action::Accept);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.takeLaunch());
         select(center,"System and storage"); center.navigate(Action::Accept);

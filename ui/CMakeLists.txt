@@ -24,7 +24,10 @@ if(SURFACE_BUILD_SHELL)
     include(controller.cmake)
 endif()
 if(BUILD_TESTING)
-    add_executable(surface-command-json-tests tests/control_center_json_tests.cpp)
+    add_executable(surface-persistent-memory-tests tests/persistent_memory_tests.cpp)
+    target_include_directories(surface-persistent-memory-tests PRIVATE include)
+    add_test(NAME surface-persistent-memory COMMAND surface-persistent-memory-tests)
+    add_executable(surface-command-json-tests tests/control_center_json_tests.cpp src/model.cpp)
     target_include_directories(surface-command-json-tests PRIVATE include)
     target_link_libraries(surface-command-json-tests PRIVATE Threads::Threads)
     target_compile_options(surface-command-json-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -43,6 +46,7 @@ if(BUILD_TESTING)
     add_test(NAME surface-status COMMAND surface-status-tests)
     # These test executables use assert() for verification, including in Release.
     foreach(test_target IN ITEMS
+            surface-persistent-memory-tests
             surface-command-json-tests
             surface-global-home-tests
             surface-core-tests

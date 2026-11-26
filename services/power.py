@@ -18,6 +18,7 @@ DATA = Path('/data')
 STATE = Path('/sys/power/state')
 MEM_SLEEP = Path('/sys/power/mem_sleep')
 INPUT = Path('/dev/input')
+PIDFILE = Path('/run/surface-power.pid')
 LOCKS = (Path('/run/surface-library-discovery.lock'),
          Path('/run/surface-system-update.lock'))
 EVENT = struct.Struct('@llHHi')
@@ -31,6 +32,10 @@ COOLDOWN = 2.0
 
 
 class PowerError(ValueError):
+    pass
+
+
+class StorageBusy(PowerError):
     pass
 
 
@@ -61,7 +66,7 @@ def storage_idle():
             try:
                 fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise PowerError('Suspend deferred while storage work is running') from error
+                raise StorageBusy('Suspend deferred while storage work is running') from error
         yield
     finally:
         for fd in reversed(descriptors):
@@ -181,13 +186,41 @@ def drain(fd):
             return
 
 
-def watch(stop=None):
+def request_sleep():
+    """One owner handles both UI and button sleep, including wake suppression."""
+    guard()
+    fd = os.open(PIDFILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_mode & 0o077:
+            raise PowerError('The power service PID file is not trusted')
+        raw = os.read(fd, 32).strip()
+        if not raw.isdigit() or int(raw) <= 1:
+            raise PowerError('The power service PID is invalid')
+        pid = int(raw)
+    finally:
+        os.close(fd)
+    handle = os.pidfd_open(pid)
+    try:
+        arguments = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+        if b'/usr/sbin/surface-power' not in arguments or b'--watch' not in arguments:
+            raise PowerError('The power-button service is not running')
+        signal.pidfd_send_signal(handle, signal.SIGUSR1)
+    finally:
+        os.close(handle)
+    print('Sleep requested; waiting for any active storage operation', flush=True)
+
+
+def watch(stop=None, requested=None):
     guard()
     stop = stop or (lambda: False)
     detector = TapDetector()
     nodes = {}
     buffers = {}
     next_scan = 0.0
+    pending_sleep = False
+    retry_at = 0.0
+    requested = requested or (lambda: False)
     with selectors.PollSelector() as selector:
         def remove(path):
             fd = nodes.pop(path, None)
@@ -198,9 +231,36 @@ def watch(stop=None):
             buffers.pop(path, None)
             detector.remove(path)
 
+        def try_sleep():
+            nonlocal pending_sleep, retry_at
+            try:
+                suspend()
+                print('Power button: resumed', flush=True)
+                pending_sleep = False
+            except StorageBusy:
+                # Keep the request; discovery runs periodically and is not a
+                # reason to make the physical button silently stop working.
+                retry_at = time.monotonic() + 1.0
+            except (OSError, ValueError) as error:
+                print('Power button: ' + str(error), flush=True)
+                pending_sleep = False
+            if not pending_sleep:
+                detector.reset(time.monotonic())
+                for current, fd in list(nodes.items()):
+                    try:
+                        drain(fd)
+                        buffers[current] = b''
+                    except OSError:
+                        remove(current)
+
         try:
             while not stop():
                 now = time.monotonic()
+                if requested():
+                    pending_sleep = True
+                    retry_at = now
+                if pending_sleep and now >= retry_at:
+                    try_sleep()
                 if now >= next_scan:
                     candidates = sorted(path for path in INPUT.glob('event*')
                                         if path.name[5:].isdigit())[:MAX_NODES]
@@ -241,19 +301,8 @@ def watch(stop=None):
                         if not detector.feed(path, kind, code, value,
                                              seconds + micros / 1000000.0, time.monotonic()):
                             continue
-                        try:
-                            print('Power button: suspending', flush=True)
-                            suspend()
-                            print('Power button: resumed', flush=True)
-                        except (OSError, ValueError) as error:
-                            print('Power button: ' + str(error), flush=True)
-                        detector.reset(time.monotonic())
-                        for current, fd in list(nodes.items()):
-                            try:
-                                drain(fd)
-                                buffers[current] = b''
-                            except OSError:
-                                remove(current)
+                        pending_sleep = True
+                        try_sleep()
                         break
         finally:
             for path in list(nodes):
@@ -269,6 +318,17 @@ def main(argv=None):
     try:
         if options.watch:
             stopped = False
+            request = False
+
+            def queue(_signal, _frame):
+                nonlocal request
+                request = True
+
+            def take_request():
+                nonlocal request
+                value = request
+                request = False
+                return value
 
             def stop(_signal, _frame):
                 nonlocal stopped
@@ -276,9 +336,10 @@ def main(argv=None):
 
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGINT, stop)
-            watch(lambda: stopped)
+            signal.signal(signal.SIGUSR1, queue)
+            watch(lambda: stopped, take_request)
         else:
-            suspend()
+            request_sleep()
         return 0
     except (OSError, ValueError) as error:
         print('Power: ' + str(error), flush=True)

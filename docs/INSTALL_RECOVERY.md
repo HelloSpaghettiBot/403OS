@@ -14,8 +14,10 @@ installation and recovery remain untested.
 | `SHA256SUMS`, `surface-go-base.img.sha256` | Checksums for the two artifacts |
 | `installer-media.json` | Packaging and embedded-payload readback result |
 
-The USB has EFI, root and 4 GiB DATA partitions. DATA contains the sparse base
-as `SurfaceGoGamingOS/surface-go.img` with its `.sha256` sidecar, owned by root
+The compact image starts with EFI, root and 4 GiB DATA partitions. The guarded
+USB writer expands DATA to the selected USB's remaining capacity after full
+image readback. DATA contains the sparse base as
+`SurfaceGoGamingOS/surface-go.img` with its `.sha256` sidecar, owned by root
 with read-only file permissions. The installation panel discovers it
 automatically. No second source USB or manual file staging is required.
 Internal installation copies the pristine base, expands DATA, then copies and
@@ -44,9 +46,10 @@ does not authenticate the publisher of an unsigned image.
 5. Boot the USB and check HOME, keyboard/controller input, display, audio,
    networking, app return and shutdown before considering installation.
 
-A normal flash is not secure full-media erasure. Extra capacity remains
-outside the image layout and USB DATA stays 4 GiB. Rewriting this USB also
-replaces any saves/settings created during earlier live sessions.
+A normal flash is not secure full-media erasure. Rewriting this USB replaces
+any saves or settings created during earlier live sessions. The guarded writer
+requires a full readback before it expands DATA; a failed resize must be fixed
+before relying on the USB for game storage or update backups.
 
 The repository includes a development USB helper described in
 [USB tooling](../installer/USB_PLAN.md). It uses explicit identity/checksum

@@ -150,3 +150,37 @@ class DisplaySettings(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class DisplayCrashRecovery(unittest.TestCase):
+    def test_preferred_mode_compositor_failure_retries_with_backoff(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        settings = display.Settings(base/'config/display.json', base/'run/display')
+        serial = base/'serial';serial.touch()
+        now = [0.0]
+        signals = {}
+        attempts = []
+        processes = []
+        def launch(*args, **kwargs):
+            attempts.append(now[0])
+            process = Mock();process.poll.return_value=1
+            processes.append(process)
+            if len(attempts)==4:
+                signals[signal.SIGTERM](signal.SIGTERM,None)
+            return process
+        def advance(seconds): now[0] += seconds
+        with patch.object(display, 'private_directory', side_effect=lambda p:p.mkdir(parents=True,exist_ok=True)), \
+                patch.object(display, 'inventory', return_value=[]), \
+                patch.object(display, 'Rotation'), patch.object(display, 'SERIAL', serial), \
+                patch.object(display.signal, 'signal', side_effect=lambda sig, fn:signals.__setitem__(sig,fn)), \
+                patch.object(display.subprocess, 'Popen', side_effect=launch), \
+                patch.object(display, 'terminate') as terminate, \
+                patch.object(display.time, 'monotonic', side_effect=lambda:now[0]), \
+                patch.object(display.time, 'sleep', side_effect=advance):
+            display.session(settings,'pixman')
+        self.assertEqual(len(attempts),4)
+        self.assertGreaterEqual(attempts[1]-attempts[0],2)
+        self.assertGreaterEqual(attempts[2]-attempts[1],4)
+        self.assertGreaterEqual(attempts[3]-attempts[2],8)
+        self.assertFalse(settings.config.exists())

@@ -52,13 +52,13 @@ an OpenGL default. The Windows supervisor tracks its own descendants,
 including detached Wine processes, and cleans them before returning. No game
 compatibility follows from successful runner setup alone.
 
-The layout has 64 MiB EFI, 2 GiB ext4 root and 4 GiB ext4 DATA. Root is writable
-for development diagnostics; recoverable read-only system and signed updates
-remain release work. Internal DATA expansion is an explicit installer stage
-under validation, not a general boot-time resize. It accepts only the exact
-freshly cloned layout and preserves EFI/root data. The whole-device USB
-flasher keeps the source image's three-partition layout and 4 GiB DATA; it
-does not perform the internal installer's DATA expansion.
+The compact source image has 64 MiB EFI, 2 GiB ext4 root and 4 GiB ext4 DATA.
+Root is writable for development diagnostics; recoverable read-only system and
+signed updates remain release work. Internal DATA expansion is an explicit
+installer stage under validation, not a general boot-time resize. It accepts
+only the exact freshly cloned layout and preserves EFI/root data. After a
+complete image readback, the guarded whole-device USB writer moves the backup
+GPT to the physical USB end and expands DATA ext4 to the remaining capacity.
 
 The host VM harness creates only new regular qcow2 files below
 artifacts/vm-tests. The disposable guest installer requires explicit VM

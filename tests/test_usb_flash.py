@@ -107,6 +107,48 @@ class USBFlashTests(unittest.TestCase):
             with self.assertRaises(flash.FlashError):
                 flash.check_boot(path, 'a'*64)
 
+    def test_usb_data_expansion_targets_only_partition_three_and_verifies_ext4_size(self):
+        backend = object.__new__(flash.UDisks)
+        backend.options = {'auth.no_user_interaction': True}
+        backend.dbus = type('DBus', (), {'UInt64': staticmethod(int)})
+        disk_object = flash.udisks_object('/dev/sdz')
+        data_object = '/org/freedesktop/UDisks2/block_devices/sdz3'
+        values = {
+            (disk_object, 'org.freedesktop.UDisks2.PartitionTable', 'Partitions'):
+                ['/org/freedesktop/UDisks2/block_devices/sdz2', data_object],
+            ('/org/freedesktop/UDisks2/block_devices/sdz2', 'org.freedesktop.UDisks2.Partition', 'Number'): 2,
+            (data_object, 'org.freedesktop.UDisks2.Partition', 'Number'): 3,
+            (data_object, 'org.freedesktop.UDisks2.Block', 'IdLabel'): 'SURFACE_DATA',
+            (data_object, 'org.freedesktop.UDisks2.Block', 'Size'): 200*1024**3,
+            (data_object, 'org.freedesktop.UDisks2.Filesystem', 'Size'): 199*1024**3,
+        }
+        backend.object_property = mock.Mock(side_effect=lambda path, interface, name: values[(path, interface, name)])
+        resize = mock.Mock()
+        backend.interface = mock.Mock(return_value=type('Proxy', (), {'Resize': resize})())
+        result = backend.expand_data('/dev/sdz', 256*1024**3)
+        self.assertEqual(result, {'partition_bytes': 200*1024**3, 'filesystem_bytes': 199*1024**3})
+        self.assertEqual(backend.interface.call_args_list,
+            [mock.call(data_object, 'org.freedesktop.UDisks2.Partition'),
+             mock.call(data_object, 'org.freedesktop.UDisks2.Filesystem')])
+        self.assertEqual(resize.call_args_list,
+            [mock.call(0, backend.options, timeout=600), mock.call(0, backend.options, timeout=1800)])
+
+    def test_usb_data_expansion_refuses_wrong_partition_label_before_resize(self):
+        backend = object.__new__(flash.UDisks)
+        backend.options = {}
+        backend.dbus = type('DBus', (), {'UInt64': staticmethod(int)})
+        data_object = '/org/freedesktop/UDisks2/block_devices/sdz3'
+        values = {
+            (flash.udisks_object('/dev/sdz'), 'org.freedesktop.UDisks2.PartitionTable', 'Partitions'): [data_object],
+            (data_object, 'org.freedesktop.UDisks2.Partition', 'Number'): 3,
+            (data_object, 'org.freedesktop.UDisks2.Block', 'IdLabel'): 'OTHER',
+        }
+        backend.object_property = mock.Mock(side_effect=lambda path, interface, name: values[(path, interface, name)])
+        backend.interface = mock.Mock()
+        with self.assertRaisesRegex(flash.FlashError, 'SURFACE_DATA'):
+            backend.expand_data('/dev/sdz', 256*1024**3)
+        backend.interface.assert_not_called()
+
     def test_dense_copy_readback_valid_gpt_and_old_end_cleared(self):
         source, target = self.directory/'source.img', self.directory/'target.img'
         size, target_size = 8*1024**2, 16*1024**2

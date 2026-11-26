@@ -20,6 +20,39 @@ Devices that do not advertise a name appear as **Unnamed Bluetooth device**;
 their full address is available when selected. Refresh reads saved devices;
 start another scan to discover a name that becomes available later.
 
+### iPega PG-9023 extended controller
+
+Turn the controller off, then hold **X + HOME** for two seconds to pair in its
+standard HID/D-input mode. **Y + HOME** selects mouse mode, which does not
+provide gamepad input to the mapper. In **Controllers and button mapping**, the
+PG-9023 appears as **iPega PG-9023**, including when its Bluetooth or HID name
+is generic. The mapper can then save custom button assignments. The
+[manufacturer's PG-9023 manual](https://m.ipega.com.cn/uploads/201806/5b18ee2fa4f7d.pdf)
+documents both pairing modes.
+
+## Default controller input
+
+Supported gamepads use SDL's built-in profiles automatically in HOME and the
+shared libretro frontend. The image also supplies the standard Bluetooth
+D-input profile for iPega VID/PID `1949:0402`. Personal mappings load after the
+system defaults. Dolphin uses its SDL gamepad defaults when creating a new
+controller configuration; existing custom configurations are retained.
+
+Mixed iPega HID interfaces can carry both `ID_INPUT_KEYBOARD=1` and
+`ID_INPUT_JOYSTICK=1`. The device rule clears the keyboard tag for iPega input
+and grants the `gamepad` group access. Previously, a condition excluded that
+mixed classification, so unprivileged applications could not open the node.
+
+The optional `scripts/vm.py live --test-ipega` acceptance test creates a host
+uinput device with a Bluetooth bus identity, iPega VID/PID, a keyboard-style
+name, gamepad controls and keyboard capabilities. QEMU forwards its real evdev
+identity and events into the guest. The test first requires failure with the
+previous rule, restores the packaged rule, then checks unprivileged SDL open,
+the default profile, the actual mapper and input received by a real NES core.
+HOME navigation is driven by that same input device. This exercises the path
+after Bluetooth HID creation; it does not emulate over-the-air pairing or
+establish compatibility with every physical controller or game.
+
 ## Start the updated image
 
 When testing from USB, select USB startup in the Surface firmware. An older

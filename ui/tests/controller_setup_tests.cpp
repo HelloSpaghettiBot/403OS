@@ -9,6 +9,10 @@ void key(Setup& setup,SDL_Keycode code) {SDL_Event event{};event.type=SDL_EVENT_
 void dispatch(Setup& setup) {SDL_UpdateJoysticks();SDL_Event event;while(SDL_PollEvent(&event))setup.event(event);}
 void arm(Setup& setup) {setup.tick();SDL_Delay(240);setup.tick();}
 int main() {
+    CHECK(device_name("Unidentified",0x1949,0x0402)=="iPega PG-9023");
+    CHECK(device_name("PG-9023S Keyboard",0x1949,0x0402)=="iPega PG-9023");
+    CHECK(device_name("Unidentified",0x1949,0x9999)=="iPega controller");
+    CHECK(device_name("Unidentified",0,0)=="Unnamed controller");
     SDL_Window* window=nullptr;SDL_Renderer* renderer=nullptr;
     try {
         CHECK(SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER,"dummy",SDL_HINT_OVERRIDE));SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI,"0");
@@ -26,9 +30,11 @@ int main() {
         CHECK(SDL_AddGamepadMapping(mapping.c_str())>=0);
         {
             Setup setup(window,renderer);dispatch(setup);
-            auto view=setup.view();std::size_t index=0;
+            auto view=setup.view();CHECK(view.rows.back()=="Return to HOME");CHECK(view.rows[view.rows.size()-2]=="Refresh controller list");
+            std::size_t index=0;
             while(index<view.rows.size() && view.rows[index].find("Wizard Interaction Test")==std::string::npos)++index;
-            CHECK(index<view.rows.size());for(std::size_t i=0;i<index;++i)key(setup,SDLK_DOWN);
+            CHECK(index<view.rows.size());CHECK(view.rows[index].find("[connected, mapped]")!=std::string::npos);
+            for(std::size_t i=0;i<index;++i)key(setup,SDLK_DOWN);
             key(setup,SDLK_RETURN);CHECK(setup.view().rows[0].starts_with("Release every button"));
             SDL_Delay(10);setup.tick();SDL_Delay(950);setup.tick();arm(setup);
             CHECK(setup.view().rows[0].find("A / south")!=std::string::npos);

@@ -20,7 +20,8 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
   PPSSPP and Dolphin.
 - Moonlight streaming, Tailscale, a WebKit browser and Wine64/UMU integration.
 - Gamepad, keyboard and touch navigation, with audio, network and display controls.
-- Broad USB/Bluetooth controller drivers, SDL mappings and a custom mapping wizard.
+- USB/Bluetooth controller drivers and automatic SDL button profiles, with an
+  optional mapping wizard for custom controls.
 - Bluetooth PIN/passkey prompts and power-button tap-to-sleep while using apps.
 - Password-protected profiles, a first-run root administrator and separate user app identities.
 - Display resolution trials and sensor-driven rotation of the internal screen.

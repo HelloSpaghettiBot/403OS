@@ -274,8 +274,18 @@ std::string bluetoothName(std::string name,const std::string& mac) {
     for(auto& c:address) c=c=='-'?':':static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     auto expected=mac;
     for(auto& c:expected) c=static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    if(address==expected || name=="<unknown>" || name.size()>248) return {};
+    auto placeholder=name;
+    std::transform(placeholder.begin(),placeholder.end(),placeholder.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if(address==expected || placeholder=="<unknown>" || placeholder=="unknown" || placeholder=="unidentified" ||
+       placeholder=="unavailable" || name.size()>248) return {};
     return name;
+}
+std::string bluetoothProductName(const std::string& modalias) {
+    auto normalized=modalias;
+    std::transform(normalized.begin(),normalized.end(),normalized.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if(normalized.find("v1949p0402")!=std::string::npos) return "iPega PG-9023";
+    if(normalized.find("v1949p")!=std::string::npos) return "iPega controller";
+    return {};
 }
 // bluetoothctl lists Alias, which BlueZ initially substitutes with the address.
 // Discovery resolves Name/Alias asynchronously; retain these updates instead
@@ -313,14 +323,17 @@ bool bluetoothDiscovery(std::vector<BluetoothDevice>& devices,std::string& pendi
     return changed;
 }
 std::string bluetoothInfoName(const std::string& output,const std::string& mac) {
-    std::string name,alias;
+    std::string name,alias,modalias;
     for(auto line:lines(output)) {
         const auto first=line.find_first_not_of(" \t"); if(first==std::string::npos) continue;
         line.erase(0,first);
         if(line.starts_with("Name: ")) name=bluetoothName(line.substr(6),mac);
         else if(line.starts_with("Alias: ")) alias=bluetoothName(line.substr(7),mac);
+        else if(line.starts_with("Modalias: ")) modalias=line.substr(10);
     }
-    return alias.empty()?name:alias;
+    if(!alias.empty()) return alias;
+    if(!name.empty()) return name;
+    return bluetoothProductName(modalias);
 }
 struct BluetoothPrompt { std::string id,kind,message; };
 std::optional<BluetoothPrompt> bluetoothPrompt(const std::string& record) {
@@ -333,7 +346,7 @@ std::optional<BluetoothPrompt> bluetoothPrompt(const std::string& record) {
 }
 bool bluetoothCompleted(const std::string& record,bool pairing) {
     return jsonString(record,"event")=="complete" && jsonString(record,"status")=="PASS" &&
-        jsonBool(record,"connected") && (!pairing || (jsonBool(record,"paired") && jsonBool(record,"trusted")));
+        jsonBool(record,"connected") && jsonBool(record,"input_ready") && (!pairing || (jsonBool(record,"paired") && jsonBool(record,"trusted")));
 }
 std::optional<ProfileIdentity> authenticatedProfile(const std::string& output) {
     if(jsonString(output,"event")!="profile-status" || !jsonBool(output,"authenticated")) return {};
@@ -578,7 +591,9 @@ struct ControlCenter::Impl {
     Command command; Clock::time_point wake{};
     std::string interface,ssid,networkId,password,selectedSSID,selectedFlags;
     std::string mixer="Master",host,authURL,btMac,btName;
-    std::string btPromptId,btPromptKind,btError;
+    std::string btPromptId,btPromptKind,btError,btAdapter;
+    std::vector<Device> btAdapters;
+    bool btCable=false;
     bool btConfirm=false,btComplete=false;
     unsigned moonWidth=1280,moonHeight=720,moonFps=60,moonBitrate=0;
     std::vector<Network> networks; std::vector<Device> devices;
@@ -707,11 +722,22 @@ struct ControlCenter::Impl {
     bool mutate(Job kind,std::vector<std::string> args,const std::string& message,int seconds=15,std::string input={}) {
         return allowed() && start(kind,std::move(args),message,seconds,std::move(input));
     }
-    void pairBluetooth(bool pairing) {
+    std::vector<std::string> bluetooth(std::initializer_list<std::string> args) const {
+        std::vector<std::string> result{"/usr/sbin/surface-bluetooth"};
+        result.insert(result.end(),args);
+        if(!btAdapter.empty()) { result.push_back("--adapter");result.push_back(btAdapter); }
+        return result;
+    }
+    void pairBluetooth(bool pairing,bool cable=false) {
         if(!allowed()) return;
         btPromptId.clear();btPromptKind.clear();btError.clear();btConfirm=btComplete=false;
-        start(pairing?Job::BtPair:Job::BtConnect,{"surface-bluetooth-pair",pairing?"--pair":"--connect",btMac},
-            pairing?"Preparing controller authentication; keep it in pairing mode":"Connecting controller",180,{},true);
+        btCable=cable;
+        std::vector<std::string> args{"surface-bluetooth-pair"};
+        if(cable) args.push_back("--cable");
+        else { args.push_back(pairing?"--pair":"--connect");args.push_back(btMac); }
+        if(!btAdapter.empty()) { args.push_back("--adapter");args.push_back(btAdapter); }
+        start(pairing?Job::BtPair:Job::BtConnect,std::move(args),
+            cable?"Connect the controller by USB and approve pairing":pairing?"Preparing controller authentication; keep it in pairing mode":"Connecting controller",280,{},true);
     }
     void answerBluetooth(const std::string& value) {
         if(btPromptId.empty() || (job!=Job::BtPair && job!=Job::BtConnect)) return;
@@ -725,7 +751,12 @@ struct ControlCenter::Impl {
         for(const auto& record:lines(command.text.substr(0,end+1))) {
             const auto event=jsonString(record,"event"),message=jsonString(record,"message");
             if(event=="error") { btError=message;view.status=message; }
-            else if(event=="complete") btComplete=control_detail::bluetoothCompleted(record,job==Job::BtPair);
+            else if(event=="complete") btComplete=control_detail::bluetoothCompleted(record,job==Job::BtPair && !btCable);
+            else if(event=="prompt-ended") {
+                btPromptId.clear();btPromptKind.clear();btConfirm=false;
+                if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) cancelEdit();
+                rows();
+            }
             else if(const auto prompt=control_detail::bluetoothPrompt(record); prompt && prompt->id!=btPromptId) {
                 btPromptId=prompt->id;btPromptKind=prompt->kind;
                 if(prompt->kind=="confirm") { btConfirm=true;view.selected=1;rows();view.status=prompt->message; }
@@ -758,7 +789,7 @@ struct ControlCenter::Impl {
             if(powerConfirm!=Power::None) view.rows={powerConfirm==Power::Reboot?"Confirm restart":"Confirm suspend","Cancel"};
             else if(systemInfo) {
                 view.rows={"Model: "+readLine("/sys/class/dmi/id/product_name"),"Kernel: "+readLine("/proc/sys/kernel/osrelease"),readLine("/proc/meminfo"),storage("/data"),storage("/"),fs::is_regular_file("/data/config/gamecontrollerdb.txt")?"Saved controller mappings: /data/config/gamecontrollerdb.txt":"Controller mappings: SDL defaults; no custom mappings saved","Return to Settings"};
-            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install or update 403 OS","System and storage information","Restart device","Suspend device","Configure controller buttons","Windows applications","Display resolution","User profiles"}; break;
+            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install or update 403 OS","System and storage information","Restart device","Suspend device","Controllers and button mapping","Windows applications","Display resolution","User profiles"}; break;
         case PanelKind::Profiles:
             view.title=locked()?(profileEnrolled?"Sign in to 403 OS":"Create the root administrator password"):"User profiles";
             if(!profilesEnabled) view.rows={"Profiles require the booted OS image"};
@@ -793,7 +824,7 @@ struct ControlCenter::Impl {
             view.title=btDetail?btName:"Bluetooth controllers";
             if(btConfirm) view.rows={"Confirm pairing request","Reject pairing request"};
             else if(btDetail) view.rows={"Pair, trust and connect","Connect","Disconnect","Forget device","Back to controllers"};
-            else { view.rows={"Scan for controllers","Refresh known devices"}; for(const auto& device:devices) view.rows.push_back(device.label()); if(!adapter) view.rows.emplace_back("No Bluetooth adapter detected"); }
+            else { view.rows={"Scan for controllers","Refresh known devices","Adapter: "+(btAdapter.empty()?std::string("automatic"):btAdapter)+" (change)","Pair PlayStation controller using USB cable"}; for(const auto& device:devices) view.rows.push_back(device.label()); if(!adapter) view.rows.emplace_back("No Bluetooth adapter detected"); }
             break;
         case PanelKind::Tailscale:
             view.title="Tailscale";
@@ -878,7 +909,7 @@ struct ControlCenter::Impl {
         } else if(kind==PanelKind::Network) {
             if(interface.empty()) view.status="No Wi-Fi radio is visible to the kernel; wired networking may still be available";
             else start(Job::WpaStatus,wpa({"status"}),"Reading Wi-Fi association");
-        } else if(kind==PanelKind::Bluetooth) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
+        } else if(kind==PanelKind::Bluetooth) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--adapters"},"Detecting Bluetooth adapter");
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
@@ -1019,14 +1050,20 @@ struct ControlCenter::Impl {
             break;
         case PanelKind::Bluetooth:
             if(!btDetail) {
-                if(choice==0) mutate(Job::BtPower,{"/usr/sbin/surface-bluetooth","--power-on"},"Starting Bluetooth and enabling its radio",45);
-                else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--status"},"Detecting Bluetooth adapter");
-                else if(choice-2<devices.size()) { btMac=devices[choice-2].mac; btName=devices[choice-2].label(); btDetail=true; view.selected=0; rows(); start(Job::BtInfo,{"bluetoothctl","info",btMac},"Reading controller state"); }
+                if(choice==0) mutate(Job::BtPower,bluetooth({"--power-on"}),"Starting Bluetooth and enabling its radio",45);
+                else if(choice==1) start(Job::BtShow,{"/usr/sbin/surface-bluetooth","--adapters"},"Detecting Bluetooth adapter");
+                else if(choice==2) {
+                    if(btAdapters.empty()) { view.status="Refresh adapters first";break; }
+                    const auto found=std::find_if(btAdapters.begin(),btAdapters.end(),[&](const Device& d){return d.mac==btAdapter;});
+                    btAdapter=found==btAdapters.end() || found+1==btAdapters.end()?btAdapters.front().mac:(found+1)->mac;
+                    devices.clear();rows();start(Job::BtDevices,bluetooth({"--devices"}),"Reading devices on selected adapter");
+                } else if(choice==3) pairBluetooth(false,true);
+                else if(choice>=4 && choice-4<devices.size()) { btMac=devices[choice-4].mac; btName=devices[choice-4].label(); btDetail=true; view.selected=0; rows(); start(Job::BtInfo,bluetooth({"--info",btMac}),"Reading controller state"); }
             } else if(validMac(btMac)) {
                 if(choice==0) pairBluetooth(true);
                 else if(choice==1) pairBluetooth(false);
-                else if(choice==2) mutate(Job::BtDisconnect,{"bluetoothctl","disconnect",btMac},"Disconnecting controller");
-                else if(choice==3) mutate(Job::BtForget,{"bluetoothctl","remove",btMac},"Forgetting controller");
+                else if(choice==2) mutate(Job::BtDisconnect,bluetooth({"--disconnect",btMac}),"Disconnecting controller");
+                else if(choice==3) mutate(Job::BtForget,bluetooth({"--remove",btMac}),"Forgetting controller");
                 else { btDetail=false; view.selected=0; rows(); }
             }
             break;
@@ -1189,6 +1226,14 @@ struct ControlCenter::Impl {
     }
     void completed(Job completedJob,int code,std::string output) {
         struct Wipe { std::string& value; ~Wipe() { std::fill(value.begin(),value.end(),'\0'); } } wipe{output};
+        if(completedJob==Job::BtPair || completedJob==Job::BtConnect) {
+            btPromptId.clear();btPromptKind.clear();btConfirm=false;
+            if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) cancelEdit();
+            rows();
+            view.status=code==0 && btComplete?(btCable?std::string("Wireless controller input is ready"):"Controller connected: "+btName):
+                (btError.empty()?(code==124?"Bluetooth operation timed out; try again":"Controller authentication or connection did not complete; see Bluetooth diagnostics"):btError);
+            return;
+        }
         if(completedJob==Job::ProfileStatus || completedJob==Job::ProfileEnroll || completedJob==Job::ProfileLogin || completedJob==Job::ProfileCreate || completedJob==Job::ProfileLogout) {
             clearProfilePassword();
             if(code!=0 || jsonString(output,"event")!="profile-status") {
@@ -1349,17 +1394,23 @@ struct ControlCenter::Impl {
         case Job::WpaDisconnect: if(!failed) ssid.clear(); rows(); view.status=failed?diagnostic:"Wi-Fi disconnected"; break;
         case Job::WpaForget: if(!failed) { ssid.clear(); networkId.clear(); } rows(); view.status=failed?"Removing/saving this network was rejected":"Saved network removed"; break;
         case Job::BtShow:
-            adapter=output.find("Controller ")!=std::string::npos && output.find("No default controller")==std::string::npos; rows();
-            if(adapter) start(Job::BtDevices,{"bluetoothctl","devices"},"Reading known controllers");
+            btAdapters.clear();
+            for(const auto& record:jsonObjects(output,"adapters")) {
+                const auto mac=jsonString(record,"address");
+                if(validMac(mac) && jsonBool(record,"usable")) btAdapters.push_back({mac,jsonString(record,"name")});
+            }
+            if(std::none_of(btAdapters.begin(),btAdapters.end(),[&](const Device& d){return d.mac==btAdapter;})) btAdapter=jsonString(output,"selected");
+            adapter=validMac(btAdapter);rows();
+            if(adapter) start(Job::BtDevices,bluetooth({"--devices"}),"Reading known controllers");
             else view.status=output.empty()?"Bluetooth diagnostics returned no adapter state":brief(output);
             break;
         case Job::BtPower:
             if(failed) { view.status=diagnostic; break; }
             adapter=true; rows();
-            mutate(Job::BtScan,{"bluetoothctl","--timeout","20","scan","on"},"Scanning for 20 seconds; keep your controller in pairing mode while names appear",25); break;
+            mutate(Job::BtScan,bluetooth({"--scan"}),"Scanning for 20 seconds; keep your controller in pairing mode while names appear",45); break;
         case Job::BtScan:
             control_detail::bluetoothDevices(devices,output); rows();
-            start(Job::BtDevices,{"bluetoothctl","devices"},"Reading discovered controllers"); break;
+            start(Job::BtDevices,bluetooth({"--devices"}),"Reading discovered controllers"); break;
         case Job::BtDevices: {
             std::vector<Device> current;
             control_detail::bluetoothDevices(current,output);
@@ -1387,7 +1438,7 @@ struct ControlCenter::Impl {
             btPromptId.clear();btPromptKind.clear();btConfirm=false;
             if(edit==Edit::BluetoothPin || edit==Edit::BluetoothPasskey) cancelEdit();
             rows();
-            view.status=!failed && btComplete?"Controller connected: "+btName:
+            view.status=!failed && btComplete?(btCable?std::string("Wireless controller input is ready"):"Controller connected: "+btName):
                 (btError.empty()?"Controller authentication or connection did not complete; see Bluetooth diagnostics":btError);
             break;
         case Job::BtTrust:
@@ -1486,7 +1537,7 @@ struct ControlCenter::Impl {
             view.status="403 OS is updated and verified. Your games, saves, profiles and passwords are unchanged. Power off, remove the USB, then power on";break;
         case Job::InstallPoweroff: view.status="Power off requested. After shutdown, remove USB boot media, then power on"; break;
         case Job::Reboot: view.status="Restart requested"; break;
-        case Job::Suspend: view.status=failed?diagnostic:"Device resumed from suspend"; break;
+        case Job::Suspend: view.status=failed?diagnostic:"Sleep requested; storage work finishes before suspending"; break;
         case Job::PokeStatus:
             if(output.find("INSTALLED")==std::string::npos) { view.status="PokeMMO status could not be read: "+diagnostic; break; }
             pokeInstalled=output.find("NOT_INSTALLED")==std::string::npos && output.find("INSTALLED")!=std::string::npos; rows();
@@ -1744,6 +1795,27 @@ struct ControlCenter::Impl {
         if(!view.editing) return;
         for(unsigned char c:text) if(c>=32 && c!=127 && view.input.size()<512) view.input+=static_cast<char>(c);
     }
+    void scroll(int amount) {
+        if(!opened || view.editing || view.rows.empty()) return;
+        const auto next=static_cast<long long>(view.selected)+amount;
+        view.selected=static_cast<std::size_t>(std::clamp(next,0LL,static_cast<long long>(view.rows.size()-1)));
+    }
+    void touch(float x,float y) {
+        if(!opened) return;
+        if(Rect{1270,165,130,60}.contains(x,y)) { navigate(Action::Back);return; }
+        if(!view.editing && Rect{1050,165,100,60}.contains(x,y)) { scroll(-7);return; }
+        if(!view.editing && Rect{1160,165,100,60}.contains(x,y)) { scroll(7);return; }
+        if(view.editing) {
+            for(std::size_t i=0;i<view.keyboard.size();++i) if(Rect{190+float(i%13)*92,355+float(i/13)*55,83,48}.contains(x,y)) {
+                view.keyboard_index=i;navigate(Action::Accept);return;
+            }
+        } else {
+            const auto begin=view.selected>=7?view.selected-6:0;
+            for(std::size_t i=begin;i<view.rows.size() && i<begin+7;++i) if(Rect{185,250+float(i-begin)*68,1230,57}.contains(x,y)) {
+                view.selected=i;navigate(Action::Accept);return;
+            }
+        }
+    }
     void backspace() {
         if(view.input.empty()) return;
         auto position=view.input.size()-1;
@@ -1757,6 +1829,8 @@ ControlCenter::~ControlCenter()=default;
 void ControlCenter::open(PanelKind panel) { impl_->open(panel); }
 bool ControlCenter::active() const { return impl_->opened; }
 void ControlCenter::navigate(Action action) { impl_->navigate(action); }
+void ControlCenter::touch(float x,float y) { impl_->touch(x,y); }
+void ControlCenter::scroll(int rows) { impl_->scroll(rows); }
 void ControlCenter::inputText(std::string text) { impl_->input(text);std::fill(text.begin(),text.end(),'\0'); }
 void ControlCenter::backspace() { if(impl_->view.editing) impl_->backspace(); }
 void ControlCenter::submitText() { impl_->submit(); }

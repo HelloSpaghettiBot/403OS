@@ -8,10 +8,16 @@ device or removes an existing bond.
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
+import socket
+import struct
+import sys
 import stat
 import subprocess
 import tempfile
@@ -56,10 +62,12 @@ def run(arguments, timeout=3):
     return result.returncode, ''.join(c for c in output if c in '\n\t' or ord(c) >= 32).strip()
 
 
-def radio_blocks():
+def radio_blocks(hci=None):
     blocks = []
     for path in sorted(RFKILL.glob('rfkill[0-9]*')):
         if (path / 'type').read_text().strip() != 'bluetooth':
+            continue
+        if hci and read_optional(path / 'name') != hci and hci not in path.resolve().parts:
             continue
         soft = (path / 'soft').read_text().strip()
         hard = (path / 'hard').read_text().strip()
@@ -69,22 +77,178 @@ def radio_blocks():
     return blocks
 
 
-def clear_software_blocks():
-    blocks = radio_blocks()
+def adapter_hci_names():
+    """Resolve adapter addresses to their kernel rfkill names, without powering them."""
+    result = {}
+    for path in sorted(BLUETOOTH.glob('hci[0-9]*'))[:16]:
+        if not re.fullmatch(r'hci[0-9]+', path.name):
+            continue
+        try:
+            with socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW,
+                               socket.BTPROTO_HCI) as channel:
+                value = bytearray(128)
+                struct.pack_into('@H', value, 0, int(path.name[3:]))
+                # HCIGETDEVINFO; only its fixed dev_id/name/bdaddr prefix is read.
+                fcntl.ioctl(channel.fileno(), 0x800448d3, value, True)
+                result[':'.join(f'{b:02X}' for b in reversed(value[10:16]))] = path.name
+        except OSError:
+            continue
+    return result
+
+
+def adapter_blocks(adapter):
+    """An unrelated blocked radio must not disable a usable USB adapter."""
+    name = adapter.get('hci')
+    if not name:
+        return []
+    return radio_blocks(name)
+
+
+def adapters(preferred=None):
+    if preferred is not None and not re.fullmatch(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', preferred):
+        raise BluetoothError('The Bluetooth adapter address is invalid')
+    code, output = run([CLIENT, 'list'], 3)
+    if code:
+        raise BluetoothError('Bluetooth adapters could not be listed')
+    names = adapter_hci_names()
+    result = []
+    for address, name in re.findall(r'^Controller ((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}) (.*)$', output, re.M)[:16]:
+        address = address.upper()
+        item = dict(address=address, name=re.sub(r' \[default\]$', '', name),
+                    hci=names.get(address), powered=False, blocked=False, usable=True)
+        blocks = adapter_blocks(item)
+        item['blocked'] = any(soft or hard for _, soft, hard in blocks)
+        item['usable'] = not any(hard for _, _, hard in blocks)
+        code, information = run([CLIENT, 'show', address], 2)
+        item['powered'] = code == 0 and bool(re.search(r'^\s*Powered:\s+yes\s*$', information, re.M))
+        result.append(item)
+    if not result and not output:
+        check_client_output()
+    chosen = next((x for x in result if preferred and x['address'] == preferred.upper()), None)
+    if preferred and chosen is None:
+        raise BluetoothError('The selected Bluetooth adapter is no longer available')
+    if chosen is None:
+        chosen = next((x for x in result if x['usable'] and x['powered']), None)
+        chosen = chosen or next((x for x in result if x['usable']), None)
+        chosen = chosen or next(iter(result), None)
+    return dict(adapters=result, selected=chosen['address'] if chosen else '')
+
+
+def selected_adapter(preferred=None):
+    inventory = adapters(preferred)
+    if not inventory['selected']:
+        if any(BLUETOOTH.glob('hci[0-9]*')):
+            raise BluetoothError('Bluetooth hardware was found, but adapter initialization is incomplete. Choose Scan for controllers to retry')
+        raise BluetoothError('No Bluetooth adapter is exposed by the kernel. Cold boot after shutdown; check the boot log')
+    return next(x for x in inventory['adapters'] if x['address'] == inventory['selected'])
+
+
+def clear_software_blocks(adapter):
+    blocks = adapter_blocks(adapter)
     if any(hard for _, _, hard in blocks):
-        raise BluetoothError('Bluetooth is hardware blocked; enable the radio in firmware or turn off airplane mode')
+        raise BluetoothError('The selected Bluetooth adapter is hardware blocked; choose another adapter or enable it in firmware')
     for path, soft, _ in blocks:
         if soft:
-            # This is a single positively identified Bluetooth rfkill entry;
-            # never write WLAN, WWAN, a global switch, or its hard-block state.
             descriptor = os.open(path / 'soft', os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 if os.write(descriptor, b'0\n') != 2:
                     raise BluetoothError('Could not clear the Bluetooth software radio block')
             finally:
                 os.close(descriptor)
-    if any(soft or hard for _, soft, hard in radio_blocks()):
-        raise BluetoothError('Bluetooth remains radio blocked after the enable request')
+    if any(soft or hard for _, soft, hard in adapter_blocks(adapter)):
+        raise BluetoothError('The selected Bluetooth adapter remains radio blocked')
+
+
+def controller_command(address, command, device=None, stream=False, scan_seconds=20,
+                       client_argv=None, env=None):
+    """Select and operate in one bounded interactive client, never a fresh default."""
+    if not re.fullmatch(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', address):
+        raise BluetoothError('The Bluetooth adapter address is invalid')
+    if command not in ('power on', 'devices', 'info', 'disconnect', 'remove', 'scan on'):
+        raise BluetoothError('Unsupported Bluetooth operation')
+    if command in ('info', 'disconnect', 'remove'):
+        if not device or not re.fullmatch(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', device):
+            raise BluetoothError('The Bluetooth device address is invalid')
+    elif device is not None:
+        raise BluetoothError('This Bluetooth operation does not accept a device')
+    environment = dict(os.environ if env is None else env, LC_ALL='C', TERM='dumb')
+    with tempfile.TemporaryDirectory(prefix='surface-bluetooth-client-') as home:
+        environment['HOME'] = home
+        process = subprocess.Popen(list(client_argv or [CLIENT]), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment,
+            start_new_session=True)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        pending = b''
+        output = ''
+        state = 'select'
+        deadline = time.monotonic() + 10
+        def completed(pattern):
+            return bool(re.search(r'(?:^|[\r\n])(?:\[[^\]\r\n]{0,248}\][>#]\s*)?' + pattern + r'(?:[\r\n]|$)', output))
+        def send(value):
+            process.stdin.write((value + '\n').encode())
+            process.stdin.flush()
+        try:
+            # select is synchronous; show and version confirm the selected default
+            # even when selecting it produced no output because it already matched.
+            send('select ' + address + '\nshow\nversion')
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    if state == 'scan':
+                        send('scan off')
+                        state, deadline, output = 'stop', now + 5, ''
+                    else:
+                        raise BluetoothError('Bluetooth timed out during ' + state)
+                for _key, _ in selector.select(0.1):
+                    chunk = os.read(process.stdout.fileno(), 8192)
+                    if not chunk:
+                        raise BluetoothError('The Bluetooth command client stopped before completion')
+                    pending += chunk
+                    if len(pending) > 131072:
+                        raise BluetoothError('Bluetooth returned an oversized response')
+                    if b'\n' not in pending:
+                        continue
+                    lines, pending = pending.rsplit(b'\n', 1)
+                    text = ANSI.sub('', lines.decode(errors='replace'))
+                    text = ''.join(c for c in text if c in '\n\r\t' or ord(c) >= 32) + '\n'
+                    output = (output + text)[-131072:]
+                    if state != 'select' and stream:
+                        print(text, end='', flush=True)
+                    if re.search(r'(?:^|[\r\n])(?:\[[^\]\r\n]{0,248}\][>#]\s*)?(?:Failed to |Changing .* failed|No default controller|Controller .* not available|Device .* not available)', output):
+                        raise BluetoothError('Bluetooth operation failed: ' + output[-2048:].strip())
+                    if state == 'select' and re.search(r'(?:^|[\r\n])Version [0-9]+\.[0-9]+', output):
+                        if not re.search(r'^Controller ' + re.escape(address) + r'(?: \(|\s*$)', output, re.M | re.I):
+                            raise BluetoothError('Bluetooth did not select the requested adapter')
+                        state, output, deadline = command, '', time.monotonic() + 15
+                        send(command + (' ' + device if device else ''))
+                        if command in ('devices', 'info'):
+                            send('version')
+                    elif state in ('devices', 'info') and re.search(r'(?:^|[\r\n])Version [0-9]+\.[0-9]+', output):
+                        return output
+                    elif state == 'power on' and completed('Changing power on succeeded'):
+                        return output
+                    elif state == 'disconnect' and completed('Disconnection successful'):
+                        return output
+                    elif state == 'remove' and completed('Device has been removed'):
+                        return output
+                    elif state == 'scan on' and completed('Discovery started'):
+                        state, deadline = 'scan', time.monotonic() + scan_seconds
+                    elif state == 'stop' and completed('Discovery stopped'):
+                        return output
+                if process.poll() is not None:
+                    raise BluetoothError('The Bluetooth command client exited before completion')
+        finally:
+            selector.close()
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            process.stdin.close()
+            process.stdout.close()
 
 
 def ensure_daemon():
@@ -227,37 +391,32 @@ def save_diagnostics(filename, reason):
         temporary.unlink(missing_ok=True)
 
 
-def status():
-    blocks = radio_blocks()
+def status(preferred=None):
+    try:
+        adapter = selected_adapter(preferred)
+    except BluetoothError as error:
+        if 'unavailable' in str(error) or 'timed out' in str(error):
+            return 'Bluetooth service is not responding. Choose Scan for controllers to start it'
+        return str(error)
+    blocks = adapter_blocks(adapter)
     if any(hard for _, _, hard in blocks):
-        return 'Bluetooth is hardware blocked; enable the radio in firmware or turn off airplane mode'
+        return 'The selected Bluetooth adapter is hardware blocked; choose another adapter or enable it in firmware'
     if any(soft for _, soft, _ in blocks):
         return 'Bluetooth is software blocked. Choose Scan for controllers to enable Bluetooth'
-    try:
-        code, output = run([CLIENT, 'show'])
-    except BluetoothError:
-        return 'Bluetooth service is not responding. Choose Scan for controllers to start it'
+    code, output = run([CLIENT, 'show', adapter['address']])
     if code == 0 and CONTROLLER.search(output):
         return output
-    if code == 0 and not output:
-        try:
-            check_client_output()
-        except BluetoothError as error:
-            return str(error)
-    if not any(BLUETOOTH.glob('hci[0-9]*')):
-        return 'No Bluetooth adapter is exposed by the kernel. Cold boot after shutdown; check Bluetooth driver and firmware in the boot log'
-    return 'Bluetooth hardware was found, but adapter initialization is incomplete. Choose Scan for controllers to retry'
+    return 'Bluetooth service is not responding. Choose Scan for controllers to start it'
 
 
-def power_on():
-    clear_software_blocks()
+def power_on(preferred=None):
     ensure_daemon()
     check_client_output()
     wait_adapter()
-    code, output = run([CLIENT, 'power', 'on'], 5)
-    if code or 'Failed' in output or 'succeeded' not in output:
-        raise BluetoothError(output or 'Bluetooth radio power-on was not confirmed')
-    code, information = run([CLIENT, 'show'], 3)
+    adapter = selected_adapter(preferred)
+    clear_software_blocks(adapter)
+    output = controller_command(adapter['address'], 'power on')
+    code, information = run([CLIENT, 'show', adapter['address']], 3)
     if code or not re.search(r'^\s*Powered:\s+yes\s*$', information, re.M):
         raise BluetoothError('Bluetooth power-on returned without a powered adapter')
     return output
@@ -266,14 +425,33 @@ def power_on():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument('--adapter', metavar='ADDRESS')
+    action.add_argument('--adapters', action='store_true')
+    action.add_argument('--scan', action='store_true')
+    action.add_argument('--devices', action='store_true')
+    action.add_argument('--info', metavar='ADDRESS')
+    action.add_argument('--disconnect', metavar='ADDRESS')
+    action.add_argument('--remove', metavar='ADDRESS')
     action.add_argument('--status', action='store_true')
     action.add_argument('--power-on', action='store_true')
     action.add_argument('--boot-check', action='store_true')
     action.add_argument('--record-error', metavar='REASON')
     args = parser.parse_args(argv)
+    def canceled(_signum, _frame):
+        raise BluetoothError('Bluetooth operation was canceled')
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, canceled)
     try:
         guard()
-        if args.record_error is not None:
+        if args.adapters:
+            print(json.dumps(adapters(args.adapter)), flush=True)
+        elif args.scan or args.devices or args.info or args.disconnect or args.remove:
+            adapter = selected_adapter(args.adapter)
+            operation = 'scan on' if args.scan else 'devices' if args.devices else 'info' if args.info else 'disconnect' if args.disconnect else 'remove'
+            output = controller_command(adapter['address'], operation, args.info or args.disconnect or args.remove, stream=args.scan)
+            if not args.scan:
+                print(output, end='', flush=True)
+        elif args.record_error is not None:
             reason = ADDRESS.sub('<address>', args.record_error)
             reason = ''.join(c for c in reason if ord(c) >= 32 and ord(c) != 127)[:256]
             if not reason.strip():
@@ -287,7 +465,7 @@ def main(argv=None):
                 reason = str(error)
             save_diagnostics('bluetooth-boot.json', reason)
         else:
-            print(status() if args.status else power_on(), flush=True)
+            print(status(args.adapter) if args.status else power_on(args.adapter), flush=True)
         return 0
     except (OSError, ValueError) as error:
         if args.power_on:

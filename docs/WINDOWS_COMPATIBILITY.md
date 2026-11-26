@@ -31,11 +31,11 @@ rendering on the physical HD 615. Current
 must be checked against `vulkaninfo` on that Surface before enabling DXVK.
 
 Proton/runtime first-run setup needs at least 6 GiB free before it starts.
-The current live image's 4 GiB DATA area cannot satisfy that check. A separately
-validated installed-disk grow flow or sufficient compatible external storage
-is required; do not silently download into a full live filesystem. Guided
-setup reports the actual space constraint. Downloaded runtime versions and
-receipts must be reported separately from the checksum-pinned base image.
+The compact source image's initial 4 GiB DATA filesystem cannot satisfy that
+check. The guarded USB writer expands live DATA to the USB's available space;
+guided setup still reports the actual free-space requirement before download.
+Downloaded runtime versions and receipts must be reported separately from the
+checksum-pinned base image.
 
 The controller Windows applications panel registers a specific owner-selected
 executable path, title and runner. It does not scan for or execute applications

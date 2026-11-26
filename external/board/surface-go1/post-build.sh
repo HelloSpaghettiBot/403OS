@@ -55,6 +55,7 @@ install -D -m 0755 "$board/../../../services/bluetooth-pair.py" "$TARGET_DIR/usr
 install -D -m 0755 "$board/../../../services/power.py" "$TARGET_DIR/usr/sbin/surface-power"
 install -D -m 0644 "$board/../../../services/bluetooth-crypto.py" "$TARGET_DIR/usr/libexec/surface/bluetooth-crypto.py"
 install -D -m 0644 "$board/../../../services/bluetooth-sockets.py" "$TARGET_DIR/usr/libexec/surface/bluetooth-sockets.py"
+install -D -m 0644 "$board/../../../services/bluetooth-input.py" "$TARGET_DIR/usr/libexec/surface/bluetooth-input.py"
 install -D -m 0755 "$board/../../../services/mount-data.py" "$TARGET_DIR/usr/sbin/surface-mount-data"
 # Remove the previous global PARTUUID entry during incremental builds too.
 # S20data selects partition 3 from the actual mounted root disk instead.

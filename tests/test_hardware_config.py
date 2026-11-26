@@ -169,23 +169,32 @@ class HardwareConfigTests(unittest.TestCase):
         self.assertTrue(hardware.check(values))
 
     def test_selected_bluez_plugins_do_not_accept_an_old_disabled_daemon(self):
-        config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID': 'y', 'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG': 'y'}
-        log = 'Invocation command line was\n\n  $ ./configure --disable-hid --disable-hog\n'
+        config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_' + name.upper(): 'y' for name in hardware.BLUEZ_PLUGINS}
+        log = 'Invocation command line was\n\n  $ ./configure --disable-hid --disable-hog --disable-sixaxis\n'
         failures = hardware.check_bluez(config, log)
-        self.assertEqual({item.get('plugin') for item in failures}, {'hid', 'hog'})
+        self.assertEqual({item.get('plugin') for item in failures}, {'hid', 'hog', 'sixaxis'})
 
-    def test_actual_bluez_command_requires_both_selected_plugins(self):
+    def test_actual_bluez_command_requires_all_selected_plugins(self):
         config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID': 'y'}
-        log = '  $ ./configure --enable-hid --enable-hog --disable-hid2hci\n'
+        log = '  $ ./configure --enable-hid --enable-hog --enable-sixaxis --disable-hid2hci\n'
         self.assertEqual(hardware.check_bluez(config, log)[0]['symbol'], 'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG')
         config['BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG'] = 'y'
+        self.assertEqual(hardware.check_bluez(config, log)[0]['symbol'], 'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_SIXAXIS')
+        config['BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_SIXAXIS'] = 'y'
         self.assertEqual(hardware.check_bluez(config, log), [])
 
+    def test_selected_sixaxis_requires_daemon_reconfiguration(self):
+        config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_' + name.upper(): 'y' for name in hardware.BLUEZ_PLUGINS}
+        failures = hardware.check_bluez(config, '  $ ./configure --enable-hid --enable-hog --disable-sixaxis\n')
+        self.assertEqual(failures, [dict(group='bluetooth-plugins', plugin='sixaxis',
+            required='--enable-sixaxis without a disabling alternative')])
+
     def test_bluez_flags_in_diagnostics_and_conflicting_flags_cannot_pass(self):
-        config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID': 'y', 'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG': 'y'}
-        for log in ('help lists --enable-hid --enable-hog\n',
-                    '  $ ./configure --enable-hid --enable-hog --disable-hid\n',
-                    '  $ ./configure --enable-hid --enable-hog --enable-hog=no\n'):
+        config = {'BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_' + name.upper(): 'y' for name in hardware.BLUEZ_PLUGINS}
+        for log in ('help lists --enable-hid --enable-hog --enable-sixaxis\n',
+                    '  $ ./configure --enable-hid --enable-hog --enable-sixaxis --disable-hid\n',
+                    '  $ ./configure --enable-hid --enable-hog --enable-sixaxis --enable-hog=no\n',
+                    '  $ ./configure --enable-hid --enable-hog --enable-sixaxis --disable-sixaxis\n'):
             with self.subTest(log=log):
                 self.assertTrue(hardware.check_bluez(config, log))
 
@@ -193,9 +202,10 @@ class HardwareConfigTests(unittest.TestCase):
         kernel = self.root / 'kernel.config'
         kernel.write_text('\n'.join(name + '=' + value for name, value in self.values.items()) + '\n')
         buildroot = self.root / 'buildroot.config'
-        buildroot.write_text('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HID=y\nBR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_HOG=y\n')
+        buildroot.write_text(''.join('BR2_PACKAGE_BLUEZ5_UTILS_PLUGINS_' + name.upper() + '=y\n'
+                                    for name in hardware.BLUEZ_PLUGINS))
         log = self.root / 'config.log'
-        log.write_text('  $ ./configure --enable-hid --enable-hog\n')
+        log.write_text('  $ ./configure --enable-hid --enable-hog --enable-sixaxis\n')
         with redirect_stdout(io.StringIO()):
             self.assertEqual(hardware.main(['--config', str(kernel), '--buildroot-config', str(buildroot), '--bluez-config-log', str(log)]), 0)
             self.assertEqual(hardware.main(['--config', str(kernel), '--buildroot-config', str(buildroot)]), 1)

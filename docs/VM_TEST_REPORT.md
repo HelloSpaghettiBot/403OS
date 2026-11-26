@@ -1,5 +1,45 @@
 # VM test report
 
+## November 26: default controller input
+
+UEFI run `20261126-080750-live` used the exact public image listed below,
+OVMF/KVM, four virtual CPUs, 4 GiB RAM and a 1800×1200 virtio framebuffer.
+The run completed with no failed implemented checks; overall status is PARTIAL
+for the explicitly untested physical hardware, additional boots, recovery and
+enrolled-streaming checks.
+
+A host uinput fixture advertised Bluetooth bus 5, iPega VID/PID `1949:0402`,
+`PG-9023S Keyboard`, keyboard keys, gamepad buttons, sticks and a D-pad hat.
+QEMU virtio-input-host preserved its identity, capabilities and real evdev
+events in the guest. The test temporarily bound the previous udev rule over
+the packaged file and reproduced unprivileged SDL enumeration failure with
+both keyboard and joystick tags. Restoring the packaged rule cleared the
+keyboard tag and granted the gamepad group access.
+
+The same target mapper process then opened the device as UID 1000, reported
+15 available mapped buttons and six mapped axes, listed iPega as connected and
+mapped, and captured its raw south button. A separately launched real FCEUmm
+core received the controller through the shared frontend and produced a changed
+framebuffer compared with the no-input baseline. This used the original test
+cartridge and omitted the frontend synthetic-input override. Controller D-pad
+events changed HOME focus; the shipped graphical mapper launched from Settings
+and returned successfully after the controller B event.
+
+The image also passed root/DATA mounting, profile enrollment, keyboard/framebuffer
+input, all eleven emulator binary probes, NES SRAM/reload, browser/global HOME
+return, live rotation, networking, non-silent audio and GUI power-off. BlueZ
+daemon, transport loading, client output, crypto and local socket checks passed;
+no physical Bluetooth adapter or real controller was passed through. Over-the-air
+pairing and individual games remain unverified.
+
+Build provenance: full capped Buildroot compilation was followed by an offline
+refresh of the VM acceptance helper. Its image contents, root ownership and
+executable mode were read back; ext4 integrity and the rebuilt installation
+payload were checked before this exact-image VM run. Runtime controller
+binaries were unchanged by that helper refresh. Source checks passed 435 main
+Python tests, four additional VM-scope tests, 27 application tests and eight
+native test executables. Private logs and disks remain in ignored artifacts.
+
 ## Pairing and power source checks
 
 The actual shipped BlueZ client reproduces the missing agent in one-shot
@@ -19,17 +59,15 @@ suspend the host. Source checks do not establish Surface sleep or pairing.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `e293eea65d43a7f863bc2fa8324dad1829a0ddf6acc07a87aeda8cd7dc61f19c` |
-| Pristine installation payload | `87d3ef1f575a7725835919c5cdd877fac5c0c82442e535f26575f3bf5348f24d` |
+| Public live USB | `61ec0c6ca26fe1a24190307d52af9775cd4a7bed9a936e6d3b45b61036ba771b` |
+| Pristine installation payload | `a6b6a488bce5f9ecba806a54ba1d581c211403355901027e07538a02edcf7d9d` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
-The last completed acceptance uses a local test-media variant with the same compiled root
-filesystem and pristine payload. The exact public outer image has not been
-booted separately. Earlier runs retain their original hashes and apply only
-to their recorded revisions.
+The exact outer image completed the November 26 UEFI run above. Earlier runs
+retain their original hashes and apply only to their recorded revisions.
 
-## Current revision: live boot
+## Previous verified revision: live boot
 
 UEFI run `20261121-225552-live` booted the updated compiled UI and pristine
 installation payload through OVMF/KVM, with 4 GiB RAM, four CPUs and an

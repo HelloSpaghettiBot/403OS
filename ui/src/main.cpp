@@ -199,7 +199,9 @@ int main(int argc, char** argv) {
     const bool capture = argc > 2 && std::string(argv[1]) == "--screenshot";
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
     if(!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) { std::fprintf(stderr,"SDL: %s\n",SDL_GetError()); return 1; }
+    SDL_AddGamepadMappingsFromFile("/usr/share/surface/gamecontrollerdb.txt");
     SDL_AddGamepadMappingsFromFile("/data/config/gamecontrollerdb.txt");
+    if(const char* personal=std::getenv("SDL_GAMECONTROLLERCONFIG_FILE"))SDL_AddGamepadMappingsFromFile(personal);
     SDL_Window* window = SDL_CreateWindow("Surface HOME",int(ui_width),int(ui_height),(self_test || capture) ? SDL_WINDOW_HIDDEN : SDL_WINDOW_FULLSCREEN);
     SDL_Renderer* renderer = window ? SDL_CreateRenderer(window,self_test ? "software" : nullptr) : nullptr;
     if(!renderer) { std::fprintf(stderr,"Graphics: %s\n",SDL_GetError()); SDL_Quit(); return 1; }
@@ -347,23 +349,7 @@ int main(int argc, char** argv) {
                 if(event.type==SDL_EVENT_FINGER_DOWN) { int w=0,h=0; SDL_GetWindowSize(window,&w,&h); x*=w; y*=h; }
                 SDL_RenderCoordinatesFromWindow(renderer,x,y,&x,&y);
                 if(session.controls.active()) {
-                    const auto& view=session.controls.view();
-                    if(view.editing) {
-                        for(std::size_t i=0;i<view.keyboard.size();++i) if(Rect{190+float(i%13)*92,355+float(i/13)*55,83,48}.contains(x,y)) {
-                            const auto count=view.keyboard.size();
-                            for(std::size_t step=0;step<count && session.controls.view().keyboard_index!=i;++step) session.controls.navigate(Action::Right);
-                            if(session.controls.view().keyboard_index==i)session.controls.navigate(Action::Accept);
-                            break;
-                        }
-                    } else {
-                        const auto begin=view.selected>=7?view.selected-6:0;
-                        for(std::size_t i=begin;i<view.rows.size() && i<begin+7;++i) if(Rect{185,250+float(i-begin)*68,1230,57}.contains(x,y)) {
-                            const auto count=view.rows.size();
-                            for(std::size_t step=0;step<count && session.controls.view().selected!=i;++step) session.controls.navigate(Action::Down);
-                            if(session.controls.view().selected==i)session.controls.navigate(Action::Accept);
-                            break;
-                        }
-                    }
+                    session.controls.touch(x,y);
                 }
                 else if(child.running()) {
                     if(model.overlay && Rect{295,650,300,75}.contains(x,y)) resume();
@@ -382,6 +368,9 @@ int main(int argc, char** argv) {
                     }
                 }
                 redraw=true;
+            }
+            if(event.type==SDL_EVENT_MOUSE_WHEEL && session.controls.active()) {
+                session.controls.scroll(event.wheel.y>0?-3:3);redraw=true;
             }
             if(event.type==SDL_EVENT_WINDOW_EXPOSED || event.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) redraw=true;
         } while(SDL_PollEvent(&event));
