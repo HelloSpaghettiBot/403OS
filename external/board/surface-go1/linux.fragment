@@ -1,4 +1,15 @@
 CONFIG_EFI_PARTITION=y
+# Optical installer: a small initramfs mounts read-only media and prepares a
+# bounded writable overlay. Installed/USB images retain their direct GPT boot.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_OVERLAY_FS=y
+CONFIG_ISO9660_FS=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_JOLIET=y
+CONFIG_BLK_DEV_SR=y
 CONFIG_DRM_SIMPLEDRM=y
 CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_HID_MULTITOUCH=y

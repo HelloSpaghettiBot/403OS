@@ -1,0 +1,69 @@
+From: 403 OS contributors
+Subject: [PATCH] linux: retry joystick discovery after udev change events
+
+A controller skipped during its initial add event stays invisible to a
+running SDL application if its input classification or access permissions
+are subsequently corrected with a udev change event. SDL currently ignores
+that event, and querying the joystick list does not rescan udev devices.
+
+Deliver a distinct internal change event and let the Linux joystick driver
+retry its existing add path. The existing class and node checks still apply;
+MaybeAddDevice deduplicates device numbers, preserving existing handles and
+instance IDs. Other udev consumers continue to ignore change events, so
+keyboard, touchscreen, camera, audio and haptic behavior is unchanged.
+
+This fixes a reproducible discovery transition, not Bluetooth transport or
+physical controller functionality. Validate with an exact-descriptor UHID
+replay started after SDL: initial non-joystick classification, corrected
+classification followed by change, then real mapped button/stick/hat input.
+A second change must not create another controller or disconnect the first.
+
+Upstream: Not submitted (403 OS integration fix)
+---
+diff --git a/src/core/linux/SDL_udev.h b/src/core/linux/SDL_udev.h
+--- a/src/core/linux/SDL_udev.h
++++ b/src/core/linux/SDL_udev.h
+@@ -42,7 +42,8 @@
+ typedef enum
+ {
+     SDL_UDEV_DEVICEADDED = 1,
+-    SDL_UDEV_DEVICEREMOVED
++    SDL_UDEV_DEVICEREMOVED,
++    SDL_UDEV_DEVICECHANGED
+ } SDL_UDEV_deviceevent;
+ 
+ typedef void (*SDL_UDEV_Callback)(SDL_UDEV_deviceevent udev_type, int udev_class, const char *devpath);
+diff --git a/src/core/linux/SDL_udev.c b/src/core/linux/SDL_udev.c
+--- a/src/core/linux/SDL_udev.c
++++ b/src/core/linux/SDL_udev.c
+@@ -557,7 +557,7 @@
+         return;
+     }
+ 
+-    if (type == SDL_UDEV_DEVICEADDED) {
++    if (type == SDL_UDEV_DEVICEADDED || type == SDL_UDEV_DEVICECHANGED) {
+         devclass = device_class(dev);
+         if (!devclass) {
+             return;
+@@ -593,6 +593,8 @@
+                 device_event(SDL_UDEV_DEVICEADDED, dev);
+             } else if (SDL_strcmp(action, "remove") == 0) {
+                 device_event(SDL_UDEV_DEVICEREMOVED, dev);
++            } else if (SDL_strcmp(action, "change") == 0) {
++                device_event(SDL_UDEV_DEVICECHANGED, dev);
+             }
+         }
+ 
+diff --git a/src/joystick/linux/SDL_sysjoystick.c b/src/joystick/linux/SDL_sysjoystick.c
+--- a/src/joystick/linux/SDL_sysjoystick.c
++++ b/src/joystick/linux/SDL_sysjoystick.c
+@@ -407,6 +407,9 @@
+     }
+ 
+     switch (udev_type) {
++    case SDL_UDEV_DEVICECHANGED:
++        // Retry devices whose initial add preceded usable classification or permissions.
++        // MaybeAddDevice preserves already-open devices by checking their device number.
+     case SDL_UDEV_DEVICEADDED:
+         if (!(udev_class & (SDL_UDEV_DEVICE_JOYSTICK | SDL_UDEV_DEVICE_ACCELEROMETER))) {
+             return;

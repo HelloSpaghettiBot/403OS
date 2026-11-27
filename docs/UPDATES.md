@@ -21,6 +21,10 @@ automatically. Installation still uses the USB procedure below.
 Use a newer 403 OS installer USB to update an existing internal installation
 while keeping its games, saves, profiles, passwords and settings. Updates run
 from the USB so the installed system can stay stopped during replacement.
+Until a binary release is available, [build the disk image](BUILD.md) and write
+`output/images/surface-go.img` to USB. Experimental ISO media provides temporary
+live storage and fresh installation only; it cannot retain an update recovery
+copy after shutdown.
 
 ## Before you start
 

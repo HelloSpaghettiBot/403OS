@@ -37,7 +37,7 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.events, self.calls, self.tasks = [], [], []
         self.properties = dict(Address=Variant('s', ADDRESS), Name=Variant('s', 'Fixture controller'),
             Paired=Variant('b', False), Trusted=Variant('b', False), Connected=Variant('b', False),
-            ServicesResolved=Variant('b', True))
+            ServicesResolved=Variant('b', True), UUIDs=Variant('as', [pairing.CLASSIC_HID_UUID]))
         self.prompt = None
         self.answer = 'yes'
         self.callback_answer = None
@@ -50,6 +50,10 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.resolve_on_connect = False
         self.connect_errors = []
         self.connect_saw_services_resolved = None
+        self.profile_requests = []
+        self.profile_input = False
+        self.profile_error = None
+        self.profile_pin = False
         self.read_fd, self.write_fd = os.pipe()
 
     async def asyncTearDown(self):
@@ -115,6 +119,19 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
                 elif self.resolve_after_connect:
                     asyncio.get_running_loop().call_later(
                         .12, self.properties.__setitem__, 'ServicesResolved', Variant('b', True))
+                response = Message.new_method_return(m)
+        elif m.member == 'ConnectProfile':
+            self.profile_requests.append(m.body)
+            if self.profile_pin:
+                result = await self.bus.call(Message(destination=m.sender, path=pairing.AGENT,
+                    interface='org.bluez.Agent1', member='RequestPinCode', signature='o', body=[PEER]))
+                self.assertEqual(result.message_type, MessageType.ERROR)
+                response = Message.new_error(m, 'org.bluez.Error.AuthenticationRejected', 'fixture PIN declined')
+            elif self.profile_error:
+                response = Message.new_error(m, self.profile_error, 'fixture input profile failure')
+            else:
+                if self.profile_input:
+                    self.input_ready = True
                 response = Message.new_method_return(m)
         elif m.member in ('UnregisterAgent', 'CancelPairing', 'RequestDefaultAgent'):
             response = Message.new_method_return(m)
@@ -311,6 +328,79 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.input_ready = False
         asyncio.get_running_loop().call_later(.1, setattr, self, 'input_ready', True)
         await self.run_pair()
+
+    async def test_connected_classic_link_without_input_requests_only_its_hid_profile(self):
+        self.properties['Paired'] = Variant('b', True)
+        self.properties['Trusted'] = Variant('b', True)
+        self.input_ready, self.profile_input = False, True
+        result = await self.run_pair(self.session(profile_grace=.02), pair=False)
+        self.assertTrue(result['input_ready'])
+        self.assertEqual(self.profile_requests, [[pairing.CLASSIC_HID_UUID]])
+        self.assertNotIn((PEER, 'Pair'), self.calls)
+        self.assertNotIn((PEER, 'Set'), self.calls)
+        self.assertFalse(any(member in ('RemoveDevice', 'Disconnect') for _, member in self.calls))
+        self.assertTrue(any(event.get('phase') == 'input-profile' for event in self.events))
+        self.assertFalse(any(event['event'] == 'prompt' for event in self.events))
+
+    async def test_usable_input_during_grace_never_reconnects_profile(self):
+        self.input_ready = False
+        asyncio.get_running_loop().call_later(.05, setattr, self, 'input_ready', True)
+        await self.run_pair(self.session(profile_grace=.25))
+        self.assertEqual(self.profile_requests, [])
+
+    async def test_hog_device_never_uses_classic_connect_profile(self):
+        self.properties['UUIDs'] = Variant('as', ['00001812-0000-1000-8000-00805f9b34fb'])
+        self.input_ready, self.profile_input = False, True
+        with self.assertRaisesRegex(pairing.PairingError, 'working controller'):
+            await self.run_pair(self.session(profile_grace=.02))
+        self.assertEqual(self.profile_requests, [])
+
+    async def test_unadvertised_classic_profile_is_not_guessed(self):
+        del self.properties['UUIDs']
+        self.input_ready, self.profile_input = False, True
+        with self.assertRaisesRegex(pairing.PairingError, 'working controller'):
+            await self.run_pair(self.session(profile_grace=.02))
+        self.assertEqual(self.profile_requests, [])
+
+    async def test_profile_success_without_application_input_is_not_success_or_retried(self):
+        self.input_ready = False
+        with self.assertRaisesRegex(pairing.PairingError, 'working controller'):
+            await self.run_pair(self.session(profile_grace=.02))
+        self.assertEqual(self.profile_requests, [[pairing.CLASSIC_HID_UUID]])
+        self.assertFalse(any(event['event'] == 'complete' for event in self.events))
+
+    async def test_profile_busy_and_already_connected_wait_for_verified_input_without_repeating(self):
+        for error in ('InProgress', 'AlreadyConnected'):
+            with self.subTest(error=error):
+                self.profile_requests.clear()
+                self.input_ready = False
+                self.profile_error = 'org.bluez.Error.' + error
+                asyncio.get_running_loop().call_later(.25, setattr, self, 'input_ready', True)
+                session = self.session(profile_grace=.02)
+                session.timeouts['ready'] = .6
+                result = await self.run_pair(session)
+                self.assertTrue(result['input_ready'])
+                self.assertEqual(self.profile_requests, [[pairing.CLASSIC_HID_UUID]])
+
+    async def test_profile_failure_retains_specific_error_and_saved_bond(self):
+        self.input_ready = False
+        self.profile_error = 'org.bluez.Error.AuthenticationFailed'
+        with self.assertRaisesRegex(pairing.PairingError, 'input profile could not connect.*authentication failed') as raised:
+            await self.run_pair(self.session(profile_grace=.02))
+        self.assertEqual(raised.exception.code, 'AuthenticationFailed')
+        self.assertEqual(self.profile_requests, [[pairing.CLASSIC_HID_UUID]])
+        self.assertTrue(self.properties['Paired'].value)
+        self.assertTrue(self.properties['Trusted'].value)
+        self.assertFalse(any(member in ('RemoveDevice', 'Disconnect') for _, member in self.calls))
+
+    async def test_profile_recovery_cannot_start_a_new_pin_prompt(self):
+        self.input_ready, self.profile_pin = False, True
+        with self.assertRaisesRegex(pairing.PairingError, 'saved controller pairing could not authenticate') as raised:
+            await self.run_pair(self.session(profile_grace=.02))
+        self.assertEqual(raised.exception.code, 'input-profile-authentication')
+        self.assertFalse(any(event['event'] == 'prompt' for event in self.events))
+        self.assertTrue(self.properties['Paired'].value)
+        self.assertTrue(self.properties['Trusted'].value)
 
     async def test_another_device_cannot_prompt_during_pairing(self):
         self.prompt = 'RequestPinCode', 'o', ['/org/bluez/hci1/dev_11_22_33_44_55_66']

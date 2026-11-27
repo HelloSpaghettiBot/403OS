@@ -37,6 +37,8 @@ Pass `--ovmf /path/to/OVMF_CODE.fd` to VM commands if needed.
 | --- | --- |
 | `surface-go.img` | Bootable USB with its embedded installation payload |
 | `surface-go-base.img` | Pristine internal-storage installation image |
+| `403os-surface-go1-x86_64.iso` | Optional experimental UEFI ISO; installation testing is incomplete |
+| `403os-surface-go1-x86_64.iso.sha256`, `.iso.json` | ISO checksum and packaging metadata |
 | `SHA256SUMS` | Separate checksums for both images |
 | `installer-media.json` | Packaging and embedded-payload verification |
 
@@ -45,4 +47,25 @@ Pass `--ovmf /path/to/OVMF_CODE.fd` to VM commands if needed.
 ```
 
 See [installation](INSTALL_RECOVERY.md) for disk-writing and recovery steps.
-Generate Buildroot `legal-info` before distributing a compiled image.
+Generate Buildroot `legal-info` before distributing a compiled image:
+
+```sh
+scripts/build.sh legal-info
+```
+
+Experimental ISO packaging is optional and has not completed installation
+acceptance. To build and test it after the ordinary disk image:
+
+```sh
+scripts/build-iso.sh
+scripts/resource-budget.sh --vm python3 scripts/vm.py live --iso \
+  --image output/images/403os-surface-go1-x86_64.iso --test-install-ui
+```
+
+ISO packaging accepts only the pristine build output with empty DATA, rejects
+stored passwords and network credentials, and includes no files from a personal
+USB. It needs the current kernel's initramfs, loop, overlay, ISO9660 and XZ
+SquashFS support. After changing the kernel fragment, run
+`scripts/build.sh linux-reconfigure` followed by `scripts/build.sh` before
+packaging. The ISO's live settings are temporary; use the persistent disk image
+for offline updates that retain their recovery copy.

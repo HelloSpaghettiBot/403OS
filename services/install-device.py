@@ -414,6 +414,10 @@ def discover_sources(disks):
             errors.append(str(error))
         return True
     mounts, _ = mounted_devices(Path('/proc/self/mountinfo').read_text())
+    # ISO payloads are also visible through their private read-only lower
+    # mount. Prefer the public live-DATA path before deduplicating its inode.
+    if any('/data' in points for points in mounts.values()):
+        inspect_mount('/data')
     for points in mounts.values():
         for mountpoint in points:
             inspect_mount(mountpoint)

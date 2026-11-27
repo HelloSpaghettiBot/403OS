@@ -554,7 +554,9 @@ def wine_check(run):
         except ValueError:pass
     probe=next((item for item in events if isinstance(item,dict) and item.get('event')=='wine-probe'),{})
     if code!=0 or probe.get('exit')!=0 or probe.get('success') is not True or probe.get('gameplay_verified') is not False:
-        raise RuntimeError('Wine did not pass the real unprivileged Windows command probe; inspect wine.log')
+        reason=next((item.get('message','') for item in reversed(events)
+                     if isinstance(item,dict) and item.get('event')=='error'),output[-500:])
+        raise RuntimeError('Wine unprivileged command probe failed: '+str(reason)[-500:])
     return {'status':'PASS','mode':'unprivileged Wine64 Windows cmd.exe launch and exit',
             'exit_code':code,'gameplay_verified':False}
 

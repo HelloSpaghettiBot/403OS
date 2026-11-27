@@ -155,6 +155,16 @@ class InstallerSafetyTests(unittest.TestCase):
                          ['mount', '-t', 'ext4', '-o', 'ro,nosuid,nodev,noexec,noload'])
         self.assertEqual(sources[0]['sha256'], self.digest)
 
+    def test_iso_alias_prefers_live_data_path_before_inode_deduplication(self):
+        mounts='1 0 7:0 / /run/fixture/payload ro - squashfs /dev/loop0 ro\n2 0 7:2 / /data rw - ext4 /dev/loop2 rw\n'
+        def source(path):
+            return dict(path=str(path),filesystem_devnum='7:0',inode=12)
+        with patch.object(installer,'require_guest'),patch.object(Path,'read_text',return_value=mounts), \
+                patch.object(Path,'exists',return_value=True),patch.object(installer,'source_info',side_effect=source):
+            sources,errors=installer.discover_sources([])
+        self.assertEqual(errors,[])
+        self.assertEqual([value['path'] for value in sources],['/data/SurfaceGoGamingOS/surface-go.img'])
+
     def test_usb_fixed_disks_removable_and_small_targets_rejected(self):
         for name, options in [('sda', {'usb': True}), ('sdb', {'removable': True}),
                               ('sdc', {'size': installer.MINIMUM_TARGET - 512})]:

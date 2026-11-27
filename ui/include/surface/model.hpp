@@ -33,6 +33,7 @@ public:
     bool details = false;
     bool application_running = false;
     bool live_session = false;
+    bool iso_session = false;
     std::string message;
     Page page = Page::Home;
 };

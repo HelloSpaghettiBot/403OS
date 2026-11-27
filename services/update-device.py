@@ -25,6 +25,7 @@ import sys
 INSTALLER = Path('/usr/sbin/surface-install-device')
 UPDATES = Path('/data/updates')
 DATA = Path('/data')
+CMDLINE = Path('/proc/cmdline')
 LOCK = Path('/run/surface-system-update.lock')
 BLOCK_BYTES = 4 * 1024 * 1024
 RESERVE = 64 * 1024 * 1024
@@ -107,6 +108,7 @@ def strict_directory(path, create=False):
 
 
 def live_data(installer, target):
+    require_persistent_media()
     seed = call(installer, 'seeding_helper')
     call(seed, 'mounted_data')
     fd = strict_directory(DATA)
@@ -119,6 +121,13 @@ def live_data(installer, target):
     except BaseException:
         os.close(fd)
         raise
+
+
+def require_persistent_media():
+    if 'surface.boot=iso' in CMDLINE.read_text().split():
+        raise Refused('ISO media supports a fresh installation. To update an existing system, '
+                      'boot the USB disk image (.img.xz), which retains the recovery backup '
+                      'after shutdown. ISO temporary storage cannot retain that backup.')
 
 
 def available_space(fd, needed):
@@ -469,6 +478,7 @@ def read_backup(path):
 
 
 def restore_update(installer, args):
+    require_persistent_media()
     if not args.target or not args.expected_target_id or not args.backup or args.confirm != 'RESTORE ' + args.expected_target_id:
         raise Refused('Restore requires explicit target identity, backup and exact RESTORE <stable-id> confirmation')
     boot = call(installer, 'boot_partition_devnums')

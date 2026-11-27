@@ -39,6 +39,16 @@ class DiskSafetyTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):vm.parse_arguments(arguments)
         self.assertTrue(vm.parse_arguments(['live','--test-update-ui','--usb-storage','--companion-disk',str(vm.ARTIFACTS/'fixture.qcow2')]).test_update_ui)
 
+    def test_optical_iso_rejects_writable_disk_and_update_modes(self):
+        for arguments in (['test','--iso'],['install','--iso'],['live','--iso','--disk','fixture.qcow2'],
+                          ['live','--iso','--sata'],
+                          ['live','--iso','--test-update-ui'],['live','--iso','--companion-disk','fixture.qcow2']):
+            with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                vm.parse_arguments(arguments)
+        args=vm.parse_arguments(['live','--iso','--test-install-ui','--image','public.iso'])
+        self.assertTrue(args.iso and args.test_install_ui)
+        self.assertTrue(vm.parse_arguments(['live','--iso','--usb-storage']).usb_storage)
+
     def test_existing_password_check_requires_an_installed_disk(self):
         for arguments in (['live','--expect-existing-profile'],['test','--expect-existing-profile']):
             with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):

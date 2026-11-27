@@ -31,8 +31,14 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
   profiles, passwords and settings, with a verified system recovery copy.
 - Check GitHub for new stable OS releases in **Settings → System updates**.
 
-Supply your own games and required BIOS files. Public builds contain no ROMs,
-commercial game artwork, proprietary clients or account credentials.
+![403 OS controller mapping with a simulated iPega controller](docs/images/controller-mapping.png)
+
+*Controller mapping running in QEMU with a simulated iPega controller.
+Physical Surface Bluetooth compatibility still requires device testing.*
+
+Supply your own games and required BIOS files. Public builds contain no personal
+or commercial ROMs, commercial game artwork, proprietary clients or account
+credentials. An original MIT-licensed NES test cartridge is included for diagnostics.
 
 Put local games in `/data/roms`, or connect a supported USB/SD game drive.
 HOME updates automatically. Open **Games → Search games** to search titles or
@@ -49,6 +55,23 @@ target disk need a separate backup. External game drives remain separate.
 ![Check for new 403 OS releases in Settings](docs/images/updates.png)
 
 ## Getting started
+
+403 OS is currently available as source. No downloadable OS release has been
+published yet. Follow the [build guide](docs/BUILD.md) to create the persistent
+live USB image, `output/images/surface-go.img`.
+
+Write the image with an image writer to the intended USB. Writing erases that
+USB. Boot it in UEFI mode with Secure Boot disabled. Create your own
+administrator password at first startup.
+For a fresh installation, choose **Install 403 OS** and carefully review the
+target disk before confirming erasure. Choose **Finish and power off** when
+installation completes, remove the media, then start from internal storage.
+
+Use the persistent USB image for updates: it retains the recovery copy after
+shutdown. Experimental ISO support is included in the source, but installation
+testing is not yet complete. ISO live settings are temporary, and the ISO does
+not support updating an existing installation. The in-system update checker
+will list stable GitHub releases when they become available.
 
 [Installation and recovery](docs/INSTALL_RECOVERY.md) ·
 [System updates](docs/UPDATES.md) ·

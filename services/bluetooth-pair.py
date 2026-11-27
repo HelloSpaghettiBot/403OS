@@ -22,7 +22,8 @@ DEVICE = 'org.bluez.Device1'
 ADAPTER = 'org.bluez.Adapter1'
 MANAGER = 'org.bluez.AgentManager1'
 PROPERTIES = 'org.freedesktop.DBus.Properties'
-HID_UUIDS = {'00001124-0000-1000-8000-00805f9b34fb', '00001812-0000-1000-8000-00805f9b34fb'}
+CLASSIC_HID_UUID = '00001124-0000-1000-8000-00805f9b34fb'
+HID_UUIDS = {CLASSIC_HID_UUID, '00001812-0000-1000-8000-00805f9b34fb'}
 MAX_RESPONSE = 2048
 
 
@@ -66,7 +67,7 @@ class PairingSession:
                  find_input=None):
         self.emit, self.response_fd = emit, response_fd
         self.timeouts = dict(overall=220, call=12, pair=60, connect=35, prompt=60, ready=15,
-                             services=20, cable=120)
+                             services=20, cable=120, profile_grace=2)
         self.timeouts.update(timeouts or {})
         self.bus_address, self.find_input = bus_address, find_input
         self.pending = None
@@ -209,6 +210,9 @@ class PairingSession:
                 if peer != self.target:
                     raise PairingError('The pairing request is for another device', 'rejected')
                 result, signature = [], ''
+                if self.state == 'input-profile' and member in ('RequestPinCode', 'RequestPasskey', 'RequestConfirmation'):
+                    raise PairingError('The saved controller pairing could not authenticate its input profile. '
+                                       'The saved pairing was kept', 'input-profile-authentication')
                 if member == 'RequestPinCode':
                     if 'ipega' in self.target_name.casefold():
                         raise PairingError('This iPega controller mode should not request a PIN. Power it off, '
@@ -357,6 +361,8 @@ class PairingSession:
                        'Unplug USB and press PS; waiting for wireless input', phase='ready')
             find = self.find_input or input_probe()
             deadline = loop.time() + (self.timeouts['cable'] if cable else self.timeouts['ready'])
+            profile_after = loop.time() + self.timeouts['profile_grace']
+            profile_attempted = False
             while True:
                 if self.abort:
                     raise self.abort
@@ -373,9 +379,34 @@ class PairingSession:
                                   connected=True, input_ready=True, cable=cable)
                     self.event('complete', 'Bluetooth controller input is ready', status='PASS', **result)
                     return result
-                if loop.time() >= deadline:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
                     raise PairingError('Bluetooth did not create a working controller input device. Check its controller mode and reconnect', 'input-not-ready')
-                await asyncio.sleep(.2)
+                # Device1.Connected can describe a link whose input profile was
+                # never attached. After a short grace for asynchronous UHID and
+                # udev creation, explicitly request its advertised classic HID
+                # profile once. HOG/LE uses GATT and must not use ConnectProfile.
+                uuids = properties.get('UUIDs', [])
+                classic_hid = isinstance(uuids, (list, tuple)) and any(
+                    isinstance(uuid, str) and uuid.casefold() == CLASSIC_HID_UUID for uuid in uuids)
+                if (not cable and connection and resolved and not profile_attempted and
+                        classic_hid and loop.time() >= profile_after):
+                    profile_attempted = True
+                    self.state = 'input-profile'
+                    self.event('phase', 'Connecting the controller input profile', phase='input-profile')
+                    try:
+                        await self.call(self.target, DEVICE, 'ConnectProfile', 's', [CLASSIC_HID_UUID],
+                                        seconds=min(self.timeouts['call'], remaining))
+                    except PairingError as error:
+                        if error.code not in ('InProgress', 'AlreadyConnected'):
+                            raise PairingError('The controller input profile could not connect: ' + str(error),
+                                               error.code) from error
+                    finally:
+                        self.state = 'ready'
+                    # Re-read both BlueZ state and application-visible input.
+                    # A successful D-Bus method alone never confirms readiness.
+                    continue
+                await asyncio.sleep(min(.2, remaining))
         finally:
             if self.response_fd is not None:
                 loop.remove_reader(self.response_fd)

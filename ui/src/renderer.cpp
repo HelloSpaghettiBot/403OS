@@ -148,7 +148,8 @@ struct HomeRenderer::Impl {
         rectangle(r,{0,0,ui_width,ui_height},{7,8,22,70});
         for(int i=0;i<24;++i) rectangle(r,{0,650+i*18.0F,ui_width,18},{5,7,16,static_cast<Uint8>(8+i*6)});
         icon(0,62,31,65);text(147,44,"403 OS",40,white,false);
-        if(m.live_session) text(68,111,"USB live session - keep USB connected until shutdown",18,{255,220,140,255});
+        if(m.live_session) text(68,111,m.iso_session?"ISO live session - temporary settings; install to keep them":
+            "USB live session - keep USB connected until shutdown",18,{255,220,140,255});
         float right=1535;
         auto clock=s.time; const float clock_width=width(clock,30);
         text(right-clock_width,47,clock,30);right-=clock_width+35;

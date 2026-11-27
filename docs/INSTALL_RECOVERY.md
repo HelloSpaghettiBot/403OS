@@ -11,6 +11,7 @@ installation and recovery remain untested.
 | --- | --- |
 | `surface-go.img` | Complete bootable USB image; write this to USB |
 | `surface-go-base.img` | Pristine installation payload with empty DATA |
+| `403os-surface-go1-x86_64.iso` | UEFI live ISO with temporary settings and a fresh installer |
 | `SHA256SUMS`, `surface-go-base.img.sha256` | Checksums for the two artifacts |
 | `installer-media.json` | Packaging and embedded-payload readback result |
 
@@ -23,6 +24,20 @@ automatically. No second source USB or manual file staging is required.
 Internal installation copies the pristine base, expands DATA, then copies and
 verifies supported live-USB games and user data. Installed DATA does not contain
 another installer image.
+
+No downloadable OS release has been published yet. Follow the
+[build guide](BUILD.md) to create the persistent live disk image. Experimental
+ISO packaging is also included in the source; its installation testing remains
+incomplete. The ISO can boot as a virtual optical disk or be written directly
+to USB by an image writer.
+Its live settings and profiles are held in temporary RAM storage; they disappear
+at shutdown unless copied into a completed fresh installation. Keep the ISO
+session small: its shared writable memory limit is 1536 MiB.
+
+**For an update, use the persistent `.img` USB.** The ISO supports fresh
+installation only, because it cannot retain the required recovery backup after
+shutdown. Both formats require UEFI with Secure Boot disabled. Verify the disk
+image against its generated `SHA256SUMS`, or the ISO against its `.iso.sha256`.
 
 Retain a dated image/checksum pair, source revision and matching test results.
 Rebuilding replaces output filenames. A checksum detects changed bytes; it

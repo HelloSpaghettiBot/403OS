@@ -948,7 +948,7 @@ struct ControlCenter::Impl {
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
-            updateExisting=existingUpdate;refreshInstallation();
+            updateExisting=existingUpdate && !fs::is_regular_file("/run/surface-iso/boot.json");refreshInstallation();
         } else if(kind==PanelKind::PokeMMO) {
             pokeConfirm=pokeRomConfirm=false; pokeInstalled=fs::is_regular_file("/data/apps/pokemmo/client/PokeMMO.sh") && access("/data/apps/pokemmo/jre/bin/java",X_OK)==0; rows();
             start(Job::PokeStatus,{"pokemmo-setup","--status"},"Checking the local PokeMMO installation");

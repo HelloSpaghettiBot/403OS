@@ -31,6 +31,8 @@ class OfflineUpdateTests(unittest.TestCase):
         self.data = self.base / 'data'
         self.data.mkdir()
         self.updates = self.data / 'updates'
+        self.cmdline = self.base / 'cmdline'
+        self.cmdline.write_text('root=/dev/fixture2 surface.boot=live\n')
         self.parts = [dict(number=1, name='boot', first=128, last=639, bytes=512 * 512,
                            type='fixture-efi', attributes=4, uuid='fixture-efi-uuid'),
                       dict(number=2, name='root', first=640, last=1663, bytes=1024 * 512,
@@ -73,6 +75,7 @@ class OfflineUpdateTests(unittest.TestCase):
                               boot_partition_devnums=lambda: {'252:1'},
                               open_clone_target=self.open_writable)
         self.patches = [patch.object(update, 'UPDATES', self.updates), patch.object(update, 'DATA', self.data),
+                        patch.object(update, 'CMDLINE', self.cmdline),
                         patch.object(update, 'LOCK', self.base / 'update.lock'),
                         patch.object(update, 'installed_marker', return_value=self.existing['marker'])]
         # Unit fixtures model root ownership without requiring test runners to
@@ -242,6 +245,17 @@ class OfflineUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(update.Refused, '0700 permissions'), contextlib.redirect_stdout(io.StringIO()):
             self.execute()
         self.assertEqual(self.open_writable_count, 0)
+
+    def test_iso_update_and_restore_refused_before_backup_or_writes(self):
+        args, _ = self.arguments()
+        self.cmdline.write_text('surface.boot=iso quiet\n')
+        with self.assertRaisesRegex(update.Refused, 'retains the recovery backup'):
+            self.execute(args)
+        with self.assertRaisesRegex(update.Refused, 'retains the recovery backup'):
+            update.restore_update(self.installer, args)
+        self.assertEqual(self.open_writable_count, 0)
+        self.assertFalse(self.updates.exists())
+        self.assertEqual(self.target.read_bytes(), self.old)
 
     def test_backup_symlink_or_shared_writable_directory_refused(self):
         other = self.base / 'elsewhere'

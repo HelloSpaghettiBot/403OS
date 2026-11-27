@@ -18,6 +18,7 @@
 #include <ctime>
 #include <future>
 #include <fstream>
+#include <sstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,13 +33,38 @@ void stop_session(int) { session_stop=1; }
 void controller_report() {
     // Inventory only: never log key events or controller Bluetooth addresses.
     if(!std::filesystem::is_regular_file("/etc/surface-image-id") || geteuid()!=0) return;
+    // Check kernel nodes too: a missing SDL hotplug event must not leave the
+    // startup-only "zero joysticks" report as our sole diagnostic evidence.
+    std::ostringstream inventory;
+    for(int number=0;number<128;++number) {
+        const auto base=std::filesystem::path("/sys/class/input")/("event"+std::to_string(number))/"device";
+        std::string bus;std::getline(std::ifstream(base/"id/bustype"),bus);
+        if(bus!="0005") continue;
+        inventory<<"kernel event"<<number;
+        for(const char* field:{"name","id/vendor","id/product","id/version","capabilities/key","capabilities/abs"}) {
+            std::string value;std::getline(std::ifstream(base/field),value);
+            for(char& c:value)if(static_cast<unsigned char>(c)<32 || c==127)c=' ';
+            inventory<<' '<<field<<'='<<value.substr(0,256);
+        }
+        struct stat info{};
+        const auto node="/dev/input/event"+std::to_string(number);
+        if(lstat(node.c_str(),&info)==0)inventory<<" uid="<<info.st_uid<<" gid="<<info.st_gid<<" mode="<<std::oct<<(info.st_mode&0777)<<std::dec;
+        inventory<<'\n';
+    }
+    int count=0;auto* ids=SDL_GetJoysticks(&count);
+    inventory<<"SDL input inventory: "<<count<<" joystick collections\n";
+    for(int i=0;ids && i<count && i<32;++i)inventory<<"SDL id="<<ids[i]<<" mapped="<<SDL_IsGamepad(ids[i])<<'\n';
+    SDL_free(ids);
+    static std::string previous;
+    const auto snapshot=inventory.str();
+    if(snapshot==previous)return;
     const int directory=open("/data/logs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if(directory<0) return;
     const int fd=openat(directory,"controller-input.log",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600);
     close(directory);if(fd<0) return;
     FILE* file=fdopen(fd,"w");if(!file){close(fd);return;}
-    int count=0;auto* ids=SDL_GetJoysticks(&count);
-    std::fprintf(file,"SDL input inventory: %d joystick collections\n",count);
+    std::fprintf(file,"%s",snapshot.c_str());
+    ids=SDL_GetJoysticks(&count);
     for(int i=0;ids && i<count && i<32;++i) {
         const auto id=ids[i];char guid[33]{};
         SDL_GUIDToString(SDL_GetJoystickGUIDForID(id),guid,sizeof(guid));
@@ -50,7 +76,7 @@ void controller_report() {
             joystick?SDL_GetNumJoystickAxes(joystick):0,joystick?SDL_GetNumJoystickHats(joystick):0);
         if(joystick) SDL_CloseJoystick(joystick);
     }
-    SDL_free(ids);std::fclose(file);
+    SDL_free(ids);std::fclose(file);previous=snapshot;
 }
 
 struct Session {
@@ -221,8 +247,10 @@ int main(int argc, char** argv) {
     for(auto& app:model.apps) if(!app.executable.empty() && !std::filesystem::exists(app.executable))
         app.subtitle="Application is not installed";
     model.live_session=std::filesystem::is_regular_file("/data/SurfaceGoGamingOS/surface-go.img");
+    model.iso_session=std::filesystem::is_regular_file("/run/surface-iso/boot.json");
     if(model.live_session)
-        model.apps.insert(model.apps.begin(),{"install","Update or install 403 OS","Keep games and settings when updating",""});
+        model.apps.insert(model.apps.begin(),{"install",model.iso_session?"Install 403 OS":"Update or install 403 OS",
+            model.iso_session?"Clean installation to internal storage":"Keep games and settings when updating",""});
     Session session;
     const char* catalog=std::getenv("SURFACE_LIBRARY");
     session.catalog=catalog?catalog:"/data/library/catalog.tsv";
@@ -257,6 +285,7 @@ int main(int argc, char** argv) {
     for(int i=0;i<count;++i) if(auto* p=SDL_OpenGamepad(ids[i])) pads.push_back(p);
     SDL_free(ids);
     controller_report();
+    Uint64 next_controller_report=SDL_GetTicks()+2000;
     auto draw=[&]{home->draw(model,status,session.controls.active()?&session.controls.view():nullptr);};
     auto resume=[&] { model.overlay=false;model.message.clear();SDL_HideWindow(window); };
     draw();
@@ -274,6 +303,9 @@ int main(int argc, char** argv) {
     std::string password_prompt;
     bool profile_lock_pending=false;
     while(!quit && !session_stop) {
+        if(SDL_GetTicks()>=next_controller_report) {
+            controller_report();next_controller_report=SDL_GetTicks()+2000;
+        }
         if(capture && SDL_GetTicks()>1800) {
             draw();
             SDL_Surface* frame=SDL_RenderReadPixels(renderer,nullptr);

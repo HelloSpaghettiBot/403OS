@@ -33,10 +33,19 @@ separate Moonlight setting. Physical mode support must be tested on the device.
 
 ## Image and installation model
 
-Buildroot produces two separate artifacts:
+Buildroot produces two disk artifacts:
 
 - `surface-go.img`: a live USB with its installation payload inside DATA.
 - `surface-go-base.img`: a pristine target image with empty DATA.
+
+`scripts/build-iso.sh` packages that pristine base into
+`403os-surface-go1-x86_64.iso`, a UEFI El Torito/GPT hybrid installer. Its live
+root uses a RAM overlay and temporary DATA bounded by a shared 1536 MiB tmpfs.
+The embedded installation image remains read only and checksum verified.
+Fresh installation migrates supported live settings and profiles. ISO sessions
+cannot update or restore an existing installation because their temporary
+storage cannot retain a recovery backup. Persistent USB disk images remain the
+update medium. Public releases exclude personalized DATA and credentials.
 
 The outer USB embeds the sparse base as
 `/data/SurfaceGoGamingOS/surface-go.img` with a checksum sidecar. Source

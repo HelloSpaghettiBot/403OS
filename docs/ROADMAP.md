@@ -6,6 +6,27 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 ## Current follow-up
 
+- [ ] Resolve the latest physical failure: connected iPega is absent from the
+  mapper and cannot control HOME. VM input checks and USB delivery are complete;
+  physical confirmation is pending.
+- [x] Reproduce a missing-controller transition using the actual HID descriptor:
+  old SDL ignores a later udev classification change (`before-change.log`),
+  while normal hotplug passes (`serial.log`), under `artifacts/controller-hid-debug/`.
+  This does not yet establish the cause of the physical failure.
+- [x] Require application-accessible gamepad classification before Bluetooth
+  readiness; add bounded, one-shot classic HID profile recovery without deleting
+  pairings or requesting a new PIN. 32 pairing and 21 input-gate tests pass.
+- [x] Pass the actual-descriptor delayed-classification regression with patched
+  SDL: one controller, unprivileged raw/mapped buttons, hat and stick input,
+  plus application-readiness acceptance (`after-change.log`).
+- [x] Complete final-image VM mapper, HOME, emulator and clean-poweroff checks.
+  Run `20261126-200610-live` passed those input checks but failed its shutdown
+  sequence; the corrected harness completed on the unchanged image in
+  `20261126-201008-live`, with manual UEFI USB selection required on that rerun.
+  Overall status remains PARTIAL for untested physical hardware and recovery.
+- [x] Write and read back the rebuilt USB system partitions and installer payload;
+  verify preserved DATA contents/permissions and GPT, then safely eject.
+- [ ] Confirm physical reconnect and HOME/gameplay input on the Surface.
 - [x] Capability-based iPega composite-interface classification, including
   excluding keyboard/mouse reports from gamepad slots.
 - [x] HOME left-stick navigation with a dead zone and per-device reset.

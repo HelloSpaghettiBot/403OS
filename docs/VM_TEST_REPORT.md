@@ -1,8 +1,73 @@
 # VM test report
 
-## November 26: current image live boot and update
+## November 26: actual HID descriptor and delayed discovery
 
-UEFI run `20261126-185544-live` tested the current image and embedded payload
+The latest physical report still has an iPega connected over Bluetooth but
+absent from the mapper and unable to control HOME. The following regression
+evidence does not establish that the physical problem is resolved.
+
+The VM fixture replays the controller's actual 305-byte HID report descriptor
+through UHID, exercising the guest kernel's HID parser rather than supplying
+preclassified evdev capabilities. It uses a synthetic address and no pairing
+keys. The descriptor creates separate keyboard, mouse and gamepad interfaces.
+
+| Runtime / discovery sequence | Result | Evidence under `artifacts/controller-hid-debug/` |
+| --- | --- | --- |
+| Old SDL, normal hotplug | PASS: raw/mapped button, hat and stick input | `serial.log` |
+| Old SDL, initially skipped gamepad followed by corrected udev classification | FAIL: controller count remains zero | `before-change.log` |
+| Patched SDL, the same delayed classification | PASS: one controller and raw/mapped input | `after-change.log` |
+
+The patched process ran without root privileges and discovered the gamepad
+after the udev change. Its default mapping exposed 15 buttons, six axes and
+one hat; raw and mapped face-button, D-pad and analog-stick events arrived.
+Subsequent inventories retained one controller identity. The production
+Bluetooth input gate accepted that node after its classification and gamepad
+permissions became usable (`APPLICATION_READY`).
+
+Separate source tests passed all 32 pairing cases on a private D-Bus and all
+21 input-gate cases. They cover an established link whose input appears only
+after explicit classic HID profile connection, bounded one-shot recovery,
+preserved pairing, skipped LE profiles and refusal to request a new PIN.
+
+The rebuilt disk images are complete, with their hashes recorded in STATUS.
+Final-image UEFI run `20261126-200610-live` used USB storage and simulated
+iPega input. Controller default mapping and raw evdev, actual NES core input,
+HOME D-pad/analog navigation, graphical mapper launch/return, all eleven engines,
+browser, Wine, network and Bluetooth runtime checks passed. The run's overall
+status is **FAIL** because its final shutdown timed out.
+
+The harness sent a fixed number of Escape presses while Settings had an active
+query. Those presses cancelled the query without closing the panel, so the
+subsequent click did not reach HOME's Power action. The harness now waits within
+a bounded interval for a fresh HOME Back acknowledgment before clicking Power.
+Only the harness changed. Run `20261126-201008-live` completed acceptance
+against the same image. OVMF initially reported no bootable device; manually
+selecting its displayed UEFI USB Boot Manager entry reached GRUB. This rerun
+does not verify automatic firmware selection; the earlier `200610` run did
+boot the same image automatically. This manual intervention is recorded in
+`result.json` under `firmware_boot_selection` and in `firmware-menu.png`.
+
+All executed checks in `201008` passed, including unprivileged controller
+default mapping and evdev input, actual NES core response, HOME D-pad/analog
+navigation, graphical mapper launch/controller return, all eleven emulator
+engines, browser/global HOME return, Wine, networking, live rotation,
+non-silent audio and clean GUI poweroff. The screenshot
+`artifacts/vm-tests/20261126-201008-live/ipega-mapper.png` shows the synthetic
+iPega listed as connected and mapped. It is VM evidence, not a photograph of
+the physical controller or Surface.
+
+The result is **PARTIAL**, with no failed checks: physical hardware is untested,
+reboot and interrupted recovery were not run, and enrolled streaming remains
+blocked. Tailscale persistence was not verified in this single live session.
+The matching USB update completed with a PASS delivery receipt. System-partition
+and embedded-installer readback both passed, as did existing DATA content and
+permission verification across 674 entries. GPT remained unchanged. The device
+was then safely powered off for removal. This verifies media delivery; no
+physical radio or controller has passed acceptance on the Surface.
+
+## November 26: previously delivered image live boot and update
+
+UEFI run `20261126-185544-live` tested the previously delivered image and embedded payload
 listed below, using OVMF/KVM, four virtual CPUs, 4 GiB RAM, a 1800×1200 virtio
 framebuffer and an older disposable SATA installation. Root and DATA selected
 the USB correctly. Every executed check passed; overall status is PARTIAL for
@@ -25,7 +90,7 @@ An independent complete read-only byte comparison verified the updated disk:
 | --- | ---: | --- |
 | Disk prefix and primary GPT | 1,048,576 | Unchanged |
 | Entire DATA region and backup GPT | 66,503,835,648 | Unchanged |
-| EFI and root system partitions | 2,214,592,512 | Exact match to current payload |
+| EFI and root system partitions | 2,214,592,512 | Exact match to that payload |
 
 All eleven emulator probes, NES input/SRAM reload, browser/global HOME return,
 networking, live rotation and non-silent audio passed. BlueZ service, transport,
@@ -51,9 +116,9 @@ probes, network, audio and normal GUI poweroff. All executed checks passed;
 physical hardware, interrupted-update recovery and enrolled streaming remain
 separate acceptance work.
 
-Current focused source validation passed 24 pairing tests within 72 unique
+That revision's focused source validation passed 24 pairing tests within 72 unique
 Bluetooth tests, native core and control tests, and 14 VM safety tests. These
-fixture checks supplement the current runtime results without simulating a
+fixture checks supplement that revision's runtime results without simulating a
 physical Bluetooth radio.
 
 ## November 26: game launch and Bluetooth discovery follow-up

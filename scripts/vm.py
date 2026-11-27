@@ -274,6 +274,13 @@ class VM:
                         "-device", "virtio-blk-pci,drive=installtarget,serial=SURFACE_TEST_TARGET",
                         "-kernel", str(ROOT / "output/images/bzImage"),
                         "-append", "root=/dev/vda2 rootwait ro console=ttyS0,115200 surface.vm-install=1"]
+        elif getattr(args,'iso',False):
+            if getattr(args,'usb_storage',False):
+                command += ['-drive',f'file={image},if=none,id=iso,format=raw,readonly=on',
+                            '-device','usb-storage,drive=iso,bus=xhci.0,bootindex=1,serial=SURFACE_ISO']
+            else:
+                command += ['-drive',f'file={image},if=none,id=iso,format=raw,readonly=on,media=cdrom',
+                            '-device','ide-cd,drive=iso,bus=ide.1,bootindex=1']
         elif getattr(args,'usb_storage',False):
             command += ['-drive',f'file={safe_file(disk)},if=none,id=primary,format=qcow2,discard=unmap,detect-zeroes=unmap',
                         '-device','usb-storage,drive=primary,bus=xhci.0,bootindex=1,serial=SURFACE_PRIMARY']
@@ -299,6 +306,7 @@ class VM:
                          "vcpus": cpus, "installer_attached": install or media,
                          "direct_kernel_boot": install, "sata": args.sata,
                          "usb_storage":bool(getattr(args,'usb_storage',False)), "companion_attached":bool(companion),
+                         "iso":bool(getattr(args,'iso',False)),
                          "proton_requested": bool(getattr(args, "test_proton", False))}
 
     def wait_for(self, token, timeout=180, after=0):
@@ -307,6 +315,8 @@ class VM:
             data = self.log.read_text(errors="replace") if self.log.exists() else ""
             if 'SURFACE_DATA_MOUNT_FAIL' in data:
                 raise RuntimeError(f'Boot DATA mount failed; see {self.directory}/serial.log')
+            if 'SURFACE_ISO_BOOT_FAIL' in data or 'Kernel panic - not syncing' in data:
+                raise RuntimeError(f'Early boot failed; see {self.directory}/serial.log')
             if token in data[after:]:
                 return data
             if token.startswith('SURFACE_INSTALL_UI_') and 'SURFACE_INSTALL_UI_FAILURE' in data[after:]:
@@ -648,16 +658,17 @@ def exercise_display(vm, width, height):
             'trial_mode':chosen[1],'saved_mode':original,'output':chosen[0]}
 
 
-def exercise_install_ui(vm):
+def exercise_install_ui(vm, iso=False):
     """Click through the production installer into an explicitly created VM disk."""
     start=len(vm.log.read_text(errors='replace'))
     vm.click_ui(60+6*187+85,904);time.sleep(1)
     for _ in range(10):vm.key('down')
     vm.key('ret')
-    vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
-    # Empty target: select the explicit fresh-install action after the status rows.
-    for _ in range(3):vm.key('down')
-    start=len(vm.log.read_text(errors='replace'));vm.key('ret')
+    if not iso:
+        vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
+        # Empty target: select the explicit fresh-install action after the status rows.
+        for _ in range(3):vm.key('down')
+        start=len(vm.log.read_text(errors='replace'));vm.key('ret')
     listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
     match=re.search(r'SURFACE_INSTALL_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
     if not match or int(match[1])<1 or int(match[2])!=1:
@@ -671,6 +682,7 @@ def exercise_install_ui(vm):
     vm.screenshot('installer-review.png')
     start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
     vm.wait_for('SURFACE_INSTALL_UI_COMPLETE ',1200,after=start)
+    time.sleep(.5)  # Present the completed state before capturing its frame.
     vm.screenshot('installer-complete.png')
     # Finish defaults to power off only after the verified operation. A real
     # user action is still required; completion never switches a running root.
@@ -705,6 +717,7 @@ def exercise_update_ui(vm):
     vm.screenshot('update-review.png')
     start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
     vm.wait_for('SURFACE_UPDATE_UI_COMPLETE data_preserved=1',1200,after=start)
+    time.sleep(.5)
     vm.screenshot('update-complete.png')
     vm.key('ret');vm.process.wait(timeout=45)
     if vm.process.returncode!=0:raise RuntimeError('GUI updater did not power off cleanly')
@@ -874,6 +887,7 @@ def parse_arguments(argv=None):
     parser.add_argument("--height", type=int, choices=[800, 1080, 1200], default=1200)
     parser.add_argument("--sata", action="store_true")
     parser.add_argument('--usb-storage',action='store_true',help='UEFI boot the primary disk through the emulated USB controller')
+    parser.add_argument('--iso',action='store_true',help='UEFI boot --image as a read-only optical ISO with temporary live DATA')
     parser.add_argument('--companion-disk',type=Path,help='Attach a disposable overlay of this other VM disk to check boot selection')
     parser.add_argument("--visible", action="store_true")
     parser.add_argument("--keep-open", action="store_true",
@@ -889,6 +903,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--catalog", type=Path,default=ROOT / "artifacts/library/catalog.tsv")
     parser.add_argument("--ovmf", default="/usr/share/edk2/ovmf/OVMF_CODE.fd")
     args = parser.parse_args(argv)
+    if args.iso and (args.mode!='live' or args.disk is not None or args.sata or args.companion_disk or args.test_update_ui):
+        parser.error('--iso requires a live optical boot; updates use the persistent USB disk image')
     if args.usb_storage and args.sata or (args.usb_storage or args.companion_disk) and args.mode=='install':
         parser.error('USB/companion testing requires a live or test boot and one primary disk bus')
     if args.keep_open and (not args.visible or args.mode == "install"):
@@ -943,11 +959,11 @@ def main():
             summary["installer_payload_sha256"] = hashlib.file_digest(source, "sha256").hexdigest()
         summary["qemu"] = subprocess.check_output(["qemu-system-x86_64", "--version"], text=True).splitlines()[0]
         disk = args.disk or directory / "installed.qcow2"
-        if args.mode == "live":
+        if args.mode == "live" and not args.iso:
             create_live_disk(disk, image)
         elif args.mode == "install":
             create_disk(disk)
-        elif not safe_file(disk).is_file():
+        elif args.mode == 'test' and not safe_file(disk).is_file():
             raise FileNotFoundError("Use --disk with the previously installed virtual disk")
         if args.test_ipega:
             ipega=FakeIpega(directory);args.ipega_evdev=ipega.path;args.ipega_collections=ipega.paths
@@ -1053,10 +1069,13 @@ def main():
                 vm.screenshot('power-resumed.png')
                 summary['checks']['power_button_suspend_resume'] = 'PASS'
             mounts = vm.wait_for("SURFACE_ROOT_MOUNTS_END")
-            if " / ext4 " not in mounts or " /data ext4 " not in mounts:
+            root_mount = ' / overlay ' if args.iso else ' / ext4 '
+            if root_mount not in mounts or " /data ext4 " not in mounts:
                 raise RuntimeError("Root or separate data filesystem not mounted")
-            summary["checks"]["root_and_persistent_data_mount"] = "PASS"
-            if args.usb_storage or args.companion_disk:
+            if args.iso:
+                vm.wait_for('SURFACE_ISO_BOOT_PASS')
+            summary["checks"]["root_and_temporary_data_mount" if args.iso else "root_and_persistent_data_mount"] = "PASS"
+            if (args.usb_storage or args.companion_disk) and not args.iso:
                 identity=serial_json(vm,'SURFACE_BOOT_IDENTITY ')
                 expected=expected_boot_identity(image,args.mode)
                 if any(identity.get(key)!=value for key,value in expected.items()):
@@ -1210,7 +1229,7 @@ def main():
                 if args.expect_library_games and not args.test_profiles:
                     vm.key('down');vm.key('right');vm.key('ret');time.sleep(1)
                     vm.screenshot('systems.png')
-                summary['ui_installed_disk']=exercise_install_ui(vm)
+                summary['ui_installed_disk']=exercise_install_ui(vm,iso=args.iso)
                 summary['checks']['click_installer_copy_readback_data_growth']='PASS'
                 summary['checks']['ui_clean_poweroff']='PASS'
                 summary['audio_capture']=inspect_audio_capture(directory/'audio.wav')
@@ -1227,7 +1246,18 @@ def main():
                 vm.process.wait()
             else:
                 if args.test_profiles or args.test_display or args.test_ipega:
-                    if args.test_ipega:vm.key('esc')
+                    if args.test_ipega:
+                        # Back first cancels a running Settings query before it
+                        # closes that panel. Wait for HOME to acknowledge Back
+                        # instead of clicking Power through a remaining panel.
+                        offset=len(vm.log.read_text(errors='replace'))
+                        for _ in range(8):
+                            vm.key('esc')
+                            time.sleep(.3)
+                            if 'SURFACE_INPUT action=5 ' in vm.log.read_text(errors='replace')[offset:]:
+                                break
+                        else:
+                            raise RuntimeError('Settings did not return to HOME before shutdown')
                     vm.click_ui(60+7*187+85,904)
                 else:
                     # The ordinary run reset the dock to zero after browser

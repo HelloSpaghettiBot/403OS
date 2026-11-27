@@ -7,6 +7,7 @@ address and inspect its evdev identity/capabilities without consuming input,
 grabbing a device, sending reports, or modifying the Bluetooth adapter.
 """
 import fcntl
+import grp
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ import time
 ADDRESS = re.compile(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\Z')
 BUS_BLUETOOTH = 5
 KEY_BYTES = 96
+UDEV_RECORD_MAX = 65536
 
 
 class InputNotReady(ValueError):
@@ -35,6 +37,54 @@ def read_ioctl(fd, number, size):
     fcntl.ioctl(fd, (2 << 30) | (size << 16) | (ord('E') << 8) | number,
                 result, True)
     return bytes(result)
+
+
+def require_application_access(path, info, udev_root=Path('/run/udev/data')):
+    """Require the same classification and permissions used by SDL applications.
+
+    Root can inspect an evdev node before udev has finished classifying it or
+    granting the gamepad group access. That is not a usable controller yet.
+    The caller retries this read-only gate during its existing bounded wait.
+    """
+    try:
+        group = grp.getgrnam('gamepad').gr_gid
+    except KeyError as error:
+        raise ValueError('Controller application group is unavailable') from error
+    if info.st_gid != group or not info.st_mode & stat.S_IRGRP:
+        raise ValueError('Controller input is not readable by applications yet')
+    record = Path(udev_root) / f'c{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}'
+    descriptor = os.open(record, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+                metadata.st_mode & 0o022 or not 0 < metadata.st_size <= UDEV_RECORD_MAX):
+            raise ValueError('Controller classification record is unsafe or incomplete')
+        data = os.read(descriptor, UDEV_RECORD_MAX + 1)
+        after = os.fstat(descriptor)
+        if (len(data) != metadata.st_size or len(data) > UDEV_RECORD_MAX or
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                (metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)):
+            raise ValueError('Controller classification is still changing')
+        properties = {}
+        for line in data.decode('utf-8').splitlines():
+            if not line.startswith('E:') or '=' not in line:
+                continue
+            key, value = line[2:].split('=', 1)
+            if key in properties:
+                raise ValueError('Controller classification record contains duplicate fields')
+            properties[key] = value
+        if properties.get('ID_INPUT_JOYSTICK') != '1':
+            raise ValueError('Controller input is not classified for SDL applications yet')
+        # The record filename identifies this character device. Recheck the
+        # node after reading it so hotplug cannot validate a replacement path.
+        current = os.stat(path, follow_symlinks=False)
+        if (not stat.S_ISCHR(current.st_mode) or
+                (current.st_dev, current.st_ino, current.st_rdev, current.st_uid, current.st_gid) !=
+                (info.st_dev, info.st_ino, info.st_rdev, info.st_uid, info.st_gid) or
+                not current.st_mode & stat.S_IRGRP):
+            raise ValueError('Controller input changed while checking application access')
+    finally:
+        os.close(descriptor)
 
 
 def inspect_event(path, address):
@@ -59,7 +109,10 @@ def inspect_event(path, address):
         buttons = any(keys & (1 << bit) for bit in range(0x120, 0x140))
         dpad = any(keys & (1 << bit) for bit in range(0x220, 0x224))
         generic = axes and any(keys & (1 << bit) for bit in range(0x100, 0x110))
-        return dict(node=str(path), gamepad=bool(buttons or dpad or generic),
+        gamepad = bool(buttons or dpad or generic)
+        if gamepad:
+            require_application_access(path, info)
+        return dict(node=str(path), gamepad=gamepad,
                     bus=bus, vendor=vendor, product=product, version=version)
     finally:
         os.close(fd)

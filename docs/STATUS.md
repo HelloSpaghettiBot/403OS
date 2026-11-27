@@ -1,6 +1,52 @@
 # Status — November 26, 2026
 
-The controller service-discovery follow-up fixes a confirmed ordering error:
+The latest physical Surface report is still failing: the iPega connects over
+Bluetooth but does not appear in button mapping or control HOME. This is the
+current blocking issue. The replacement build's executed VM checks now pass;
+the USB update is written, verified and safely ejected. Physical confirmation
+remains pending.
+The earlier simulated-input results do not establish a working physical controller.
+
+Replaying the controller's actual HID descriptor through the VM kernel exposed
+a separate SDL discovery defect: a controller initially skipped by SDL remains
+invisible after a udev change makes its classification usable. The old binary
+reported zero controllers and failed this case in
+`artifacts/controller-hid-debug/before-change.log`. Normal hotplug with the same
+descriptor passed in `artifacts/controller-hid-debug/serial.log`. This reproduces
+the discovery failure without establishing it as the physical device's cause.
+The patched-runtime replay now passes in
+`artifacts/controller-hid-debug/after-change.log`: the unprivileged SDL process
+discovers one controller after reclassification and receives raw and mapped
+face-button, D-pad and analog-stick events. The application-readiness gate also
+accepts the actual gamepad node.
+
+Final-image run `20261126-200610-live` passed the controller, mapper, HOME and
+emulator checks but finished with overall FAIL: the harness attempted shutdown
+while a busy Settings panel was still open. Its fixed-count Escape sequence
+cancelled the query without reaching HOME. The harness now waits for a fresh
+HOME acknowledgment; run `20261126-201008-live` completed on the unchanged image
+with no failed checks, including controller/mapper/HOME input and clean poweroff.
+That rerun required manually selecting the displayed UEFI USB entry after OVMF
+reported no bootable device; automatic UEFI boot passed in the earlier run.
+Overall status is PARTIAL for untested physical hardware, further boots,
+recovery and enrolled streaming. The USB delivery receipt records PASS for both
+system-partition and embedded-payload readback. Existing DATA contents and
+permissions passed verification across 674 entries, and GPT remained unchanged.
+
+The new Bluetooth readiness gate requires application-readable, udev-classified
+gamepad input. A bounded recovery attempts the advertised classic HID profile
+once if a connected device still lacks usable input, retaining the saved pairing
+and avoiding new PIN prompts. All 32 private-bus pairing tests and 21 input-gate
+tests pass. These checks do not confirm physical Surface input.
+
+Rebuilt artifacts used by the completed VM run and verified USB update:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Rebuilt live USB image | `5690c33f2cfdb606646da987ca83cb3a54e5f6488e58f7807332d8bbee4b3ede` |
+| Rebuilt pristine install image | `af07b7fc2297faca780fc88859863e0d8b274a81b90bdf92859b9cef49f990c4` |
+
+The previously delivered controller service-discovery follow-up fixed an ordering error:
 Connect now initiates SDP/GATT before waiting for resolved services. Saved
 pairings survive bounded busy retries and service failures. The previous code
 reproduced the reported timeout on a private D-Bus; the corrected helper passed
@@ -28,13 +74,13 @@ Settings also checks GitHub for stable releases, after startup, daily and on
 request. Checks do not install software. No downloadable stable release has
 been published; installation of updates continues to use the live USB.
 
-| Artifact | SHA-256 |
+| Previously delivered artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `5ced07f48837bb826a330de08a0f83a4206690024c64af0b098bb6737c5ca617` |
-| Pristine internal-install image | `44838eeffed3f3a5fcb79a681f5d5a0de78db9f075817c0f1f5035ce0d28f50d` |
+| Previously delivered live USB image | `5ced07f48837bb826a330de08a0f83a4206690024c64af0b098bb6737c5ca617` |
+| Previously delivered pristine install image | `44838eeffed3f3a5fcb79a681f5d5a0de78db9f075817c0f1f5035ce0d28f50d` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
-embedded installation payload. Current-image UEFI run `20261126-185544-live`
+embedded installation payload. Delivered-image UEFI run `20261126-185544-live`
 passed simulated iPega input through the unprivileged mapper, a real NES core,
 HOME D-pad/analog navigation and the graphical mapper. The production updater
 verified the recovery backup and new system partitions; one explicit Finish
@@ -53,7 +99,7 @@ password and library. That detached run detected an installer USB inserted
 after HOME, identified the running internal drive, and shut down cleanly.
 Late USB insertion has not been repeated on the current image.
 
-Current focused source checks passed 24 pairing tests and 72 unique Bluetooth
+That delivered revision's focused checks passed 24 pairing tests and 72 unique Bluetooth
 tests in total, native core and control tests, and 14 VM safety tests. These
 checks cover the service-discovery regression and launch/storage handling;
 they do not establish over-the-air controller pairing on the Surface.
