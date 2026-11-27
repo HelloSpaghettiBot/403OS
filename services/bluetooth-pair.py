@@ -46,7 +46,7 @@ def failure(code):
         'NotReady': 'The Bluetooth adapter is not ready',
         'ConnectionAttemptFailed': 'The Bluetooth device did not accept the connection',
         'ProfileUnavailable': ('Bluetooth paired, but the controller did not expose a connectable input profile. '
-                               'Use its PC/Android/HID pairing mode, remove the old pairing, and try again'),
+                               'Keep its pairing saved, wake it in PC/Android/HID mode, and reconnect'),
         'NotAvailable': 'The Bluetooth device is no longer available. Scan again',
         'Rejected': 'Bluetooth pairing was declined',
     }
@@ -242,7 +242,7 @@ class PairingSession:
         return {str(k): v.value for k, v in result[0].items()}
 
     async def wait_for_services(self):
-        """Wait for BlueZ SDP/GATT resolution before asking it to connect profiles."""
+        """Wait for SDP/GATT resolution after Connect has initiated discovery."""
         deadline = asyncio.get_running_loop().time() + self.timeouts['services']
         while True:
             properties = await self.properties()
@@ -250,10 +250,33 @@ class PairingSession:
                 return properties
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise PairingError('Bluetooth paired, but controller service discovery did not finish. '
-                                   'Remove the old pairing, put the controller in PC/Android/HID mode, and retry',
+                raise PairingError('Controller service discovery did not finish. The saved pairing was kept. '
+                                   'Wake the controller in PC/Android/HID mode and reconnect',
                                    'services-unresolved')
             await asyncio.sleep(min(.2, remaining))
+
+    async def connect(self):
+        """Let BlueZ initiate discovery, retrying only an already active operation."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeouts['connect']
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise PairingError('Bluetooth is still completing the controller connection. '
+                                   'The saved pairing was kept; wake the controller and reconnect',
+                                   'connect-busy')
+            try:
+                await self.call(self.target, DEVICE, 'Connect', seconds=remaining)
+                return
+            except PairingError as error:
+                if error.code == 'AlreadyConnected':
+                    return
+                if error.code != 'InProgress':
+                    raise
+                # Pair() or an incoming controller connection can still have
+                # SDP/GATT running. Do not delete the bond or interrupt that
+                # operation with Disconnect; retry within one shared deadline.
+                await asyncio.sleep(min(.2, max(0, deadline - loop.time())))
 
     async def operation(self, address, pair, adapter, cable):
         from dbus_next import BusType, Message, MessageType, Variant
@@ -320,18 +343,15 @@ class PairingSession:
                 await self.call(self.target, PROPERTIES, 'Set', 'ssv', [DEVICE, 'Trusted', Variant('b', True)])
             self.state = 'connect'
             if not cable:
-                # Pair() can return before BlueZ has finished loading the
-                # controller's SDP/GATT services. Connecting in that window
-                # can fail with BREDR.ProfileUnavailable despite HID support.
-                if pair and not (await self.properties()).get('ServicesResolved'):
+                # ServicesResolved is normally false for a disconnected device,
+                # even when paired. BlueZ Connect starts SDP/GATT itself; waiting
+                # for resolution first would prevent reconnection indefinitely.
+                self.event('phase', 'Connecting the Bluetooth device', phase='connect')
+                await self.connect()
+                if not (await self.properties()).get('ServicesResolved'):
+                    self.state = 'services'
                     self.event('phase', 'Discovering the controller input profile', phase='services')
                     await self.wait_for_services()
-                self.event('phase', 'Connecting the Bluetooth device', phase='connect')
-                try:
-                    await self.call(self.target, DEVICE, 'Connect', seconds=self.timeouts['connect'])
-                except PairingError as error:
-                    if error.code != 'AlreadyConnected':
-                        raise
             self.state = 'ready'
             self.event('phase', 'Waiting for the controller input device' if not cable else
                        'Unplug USB and press PS; waiting for wireless input', phase='ready')

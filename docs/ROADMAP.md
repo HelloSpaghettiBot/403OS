@@ -132,6 +132,15 @@ runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 
 ## Offline USB updates
 
+- [x] Default verified completion to **Finish and power off**, label continued
+  live-USB use, and identify internal/external game storage in HOME.
+- [x] Distinguish executable lookup/permission/launch errors and retain the
+  latest private failure; skip inaccessible ROM paths without crashing HOME.
+- [x] Launch retained GBA, N64 and SNES games through HOME on the updated,
+  detached SATA VM, render frames, save SRAM and return cleanly.
+- [x] Connect before waiting for Bluetooth services, preserving existing bonds
+  through bounded busy retries; private D-Bus regression reproduces the old wait.
+
 - [x] Update an existing compatible 403 OS installation from a newer live USB,
   with a separate Cancel-default review and verified system backup before
   replacing EFI/root while retaining installed DATA and its partition layout.

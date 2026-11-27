@@ -45,6 +45,15 @@ class DiskSafetyTests(unittest.TestCase):
                 vm.parse_arguments(arguments)
         self.assertTrue(vm.parse_arguments(['test','--disk',str(vm.ARTIFACTS/'installed.qcow2'),'--expect-existing-profile']).expect_existing_profile)
 
+    def test_game_launch_check_requires_an_explicit_installed_disk(self):
+        for arguments in (['live','--test-game-launch','gba'],['install','--test-game-launch','gba'],
+                          ['test','--test-game-launch','gba']):
+            with self.subTest(arguments=arguments),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                vm.parse_arguments(arguments)
+        args=vm.parse_arguments(['test','--disk',str(vm.ARTIFACTS/'installed.qcow2'),
+                                 '--test-game-launch','gba','--test-game-launch','n64'])
+        self.assertEqual(args.test_game_launch,['gba','n64'])
+
     def test_profile_acceptance_requires_the_real_graphical_protocol(self):
         with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
             vm.parse_arguments(['install','--test-profiles'])

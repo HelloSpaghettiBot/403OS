@@ -46,7 +46,9 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.input_ready = True
         self.fail_pair = False
         self.answer_delay = 0
-        self.resolve_after_pair = False
+        self.resolve_after_connect = False
+        self.resolve_on_connect = False
+        self.connect_errors = []
         self.connect_saw_services_resolved = None
         self.read_fd, self.write_fd = os.pipe()
 
@@ -101,15 +103,19 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
                     response = Message.new_error(m, 'org.bluez.Error.AuthenticationRejected', 'declined')
                 else:
                     self.properties['Paired'] = Variant('b', True)
-                    if self.resolve_after_pair:
-                        self.properties['ServicesResolved'] = Variant('b', False)
-                        asyncio.get_running_loop().call_later(
-                            .12, self.properties.__setitem__, 'ServicesResolved', Variant('b', True))
                     response = Message.new_method_return(m)
         elif m.member == 'Connect':
             self.connect_saw_services_resolved = self.properties['ServicesResolved'].value
-            self.properties['Connected'] = Variant('b', True)
-            response = Message.new_method_return(m)
+            if self.connect_errors:
+                response = Message.new_error(m, self.connect_errors.pop(0), 'fixture connection error')
+            else:
+                self.properties['Connected'] = Variant('b', True)
+                if self.resolve_on_connect:
+                    self.properties['ServicesResolved'] = Variant('b', True)
+                elif self.resolve_after_connect:
+                    asyncio.get_running_loop().call_later(
+                        .12, self.properties.__setitem__, 'ServicesResolved', Variant('b', True))
+                response = Message.new_method_return(m)
         elif m.member in ('UnregisterAgent', 'CancelPairing', 'RequestDefaultAgent'):
             response = Message.new_method_return(m)
         else:
@@ -139,15 +145,51 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[-1]['event'], 'complete')
         self.assertIn(('/org/bluez', 'UnregisterAgent'), self.calls)
 
-    async def test_waits_for_services_before_connecting_after_pair(self):
-        self.resolve_after_pair = True
+    async def test_waits_for_services_after_connecting(self):
+        self.properties['ServicesResolved'] = Variant('b', False)
+        self.resolve_after_connect = True
         await self.run_pair()
-        self.assertTrue(self.connect_saw_services_resolved)
+        self.assertFalse(self.connect_saw_services_resolved)
         self.assertTrue(any(event.get('phase') == 'services' for event in self.events))
+
+    async def test_existing_bond_reconnect_starts_service_discovery(self):
+        # BlueZ resolves services from Connect; a disconnected paired device
+        # cannot be required to have ServicesResolved before that call.
+        self.resolve_on_connect = True
+        for pair in (True, False):
+            with self.subTest(pair_action=pair):
+                self.properties['Paired'] = Variant('b', True)
+                self.properties['Connected'] = Variant('b', False)
+                self.properties['ServicesResolved'] = Variant('b', False)
+                self.calls.clear()
+                result = await self.run_pair(self.session(services=.05), pair=pair)
+                self.assertTrue(result['input_ready'])
+                self.assertFalse(self.connect_saw_services_resolved)
+                self.assertNotIn((PEER, 'Pair'), self.calls)
+                self.assertNotIn(('/org/bluez/hci1', 'RemoveDevice'), self.calls)
+
+    async def test_new_bond_starts_discovery_even_if_pair_did_not_resolve_services(self):
+        self.properties['ServicesResolved'] = Variant('b', False)
+        self.resolve_on_connect = True
+        result = await self.run_pair(self.session(services=.05))
+        self.assertTrue(result['input_ready'])
+        self.assertIn((PEER, 'Pair'), self.calls)
+        self.assertFalse(self.connect_saw_services_resolved)
+
+    async def test_connect_in_progress_waits_then_retries_without_repairing(self):
+        self.properties['Paired'] = Variant('b', True)
+        self.properties['ServicesResolved'] = Variant('b', False)
+        self.resolve_on_connect = True
+        self.connect_errors = ['org.bluez.Error.InProgress']
+        result = await self.run_pair(self.session(services=.05))
+        self.assertTrue(result['input_ready'])
+        self.assertEqual(self.calls.count((PEER, 'Connect')), 2)
+        self.assertNotIn((PEER, 'Pair'), self.calls)
 
     def test_profile_unavailable_has_controller_mode_guidance(self):
         error = pairing.failure('org.bluez.Error.BREDR.ProfileUnavailable')
-        self.assertIn('PC/Android/HID pairing mode', str(error))
+        self.assertIn('PC/Android/HID mode', str(error))
+        self.assertNotIn('remove', str(error).lower())
         self.assertEqual(error.code, 'ProfileUnavailable')
 
     async def test_connect_does_not_repair_or_change_trust(self):
@@ -236,13 +278,34 @@ class PairingProtocolTests(unittest.IsolatedAsyncioTestCase):
             await self.run_pair()
         self.assertFalse(any(e['event'] == 'complete' for e in self.events))
 
-    async def test_unresolved_services_fail_before_connect(self):
+    async def test_unresolved_services_fail_after_connect_and_keep_bond(self):
         self.properties['ServicesResolved'] = Variant('b', False)
         session = self.session(services=.05)
         with self.assertRaisesRegex(pairing.PairingError, 'service discovery did not finish') as raised:
             await self.run_pair(session)
         self.assertEqual(raised.exception.code, 'services-unresolved')
-        self.assertNotIn((PEER, 'Connect'), self.calls)
+        self.assertIn((PEER, 'Connect'), self.calls)
+        self.assertTrue(self.properties['Paired'].value)
+        self.assertTrue(self.properties['Trusted'].value)
+        self.assertFalse(any(e['event'] == 'complete' for e in self.events))
+        self.assertNotIn('remove', str(raised.exception).lower())
+
+    async def test_persistent_connect_in_progress_is_bounded_and_keeps_bond(self):
+        self.properties['Paired'] = Variant('b', True)
+        self.connect_errors = ['org.bluez.Error.InProgress'] * 10
+        session = self.session()
+        session.timeouts['connect'] = .05
+        with self.assertRaises(pairing.PairingError) as raised:
+            await self.run_pair(session)
+        self.assertEqual(raised.exception.code, 'connect-busy')
+        self.assertTrue(self.properties['Paired'].value)
+        self.assertFalse(any(e['event'] == 'complete' for e in self.events))
+
+    async def test_connect_authentication_failure_is_not_retried(self):
+        self.connect_errors = ['org.bluez.Error.AuthenticationFailed']
+        with self.assertRaisesRegex(pairing.PairingError, 'authentication failed'):
+            await self.run_pair()
+        self.assertEqual(self.calls.count((PEER, 'Connect')), 1)
 
     async def test_delayed_input_is_waited_for(self):
         self.input_ready = False

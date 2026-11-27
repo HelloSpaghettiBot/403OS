@@ -148,6 +148,7 @@ struct HomeRenderer::Impl {
         rectangle(r,{0,0,ui_width,ui_height},{7,8,22,70});
         for(int i=0;i<24;++i) rectangle(r,{0,650+i*18.0F,ui_width,18},{5,7,16,static_cast<Uint8>(8+i*6)});
         icon(0,62,31,65);text(147,44,"403 OS",40,white,false);
+        if(m.live_session) text(68,111,"USB live session - keep USB connected until shutdown",18,{255,220,140,255});
         float right=1535;
         auto clock=s.time; const float clock_width=width(clock,30);
         text(right-clock_width,47,clock,30);right-=clock_width+35;
@@ -180,7 +181,9 @@ struct HomeRenderer::Impl {
         text(124,691,metadata,26,muted,false,1515);
         const char* section=m.page==Page::Systems?"EMULATOR SYSTEMS":m.page==Page::Games?"ALL GAMES":m.page==Page::Favorites?"FAVORITES":m.page==Page::Recent?"RECENTLY PLAYED":m.page==Page::Search?"SEARCH RESULTS":"YOUR LIBRARY";
         text(75,762,section,15,{174,179,204,255},true);
-        if(m.selected().game) text(75,794,"Game data on your library drive",18,muted);
+        if(m.selected().game) text(75,794,m.selected().rom_path.starts_with("/data/")?
+            (m.live_session?"Stored on this USB - copied to the device during installation":"Installed on this device"):
+            "Stored on an external drive - keep that drive connected",18,muted);
         static const std::array<std::string,8> labels{"Games","Emulators","Moonlight","Browser","Tailscale","Controllers","Settings","Power"};
         for(std::size_t i=0;i<dock_count;++i) {
             auto b=dock_rect(i);

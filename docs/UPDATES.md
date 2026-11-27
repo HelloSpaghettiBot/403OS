@@ -49,9 +49,13 @@ elsewhere before rewriting that USB if you still need it for recovery.
    appears. The updater checks its source and saves a verified copy of the
    existing system before replacing EFI and the root filesystem. It then
    reads back the replacement to check its contents.
-6. Choose **Power off**. After shutdown, remove the USB and start the device.
+6. Choose **Finish and power off**. After shutdown, remove the USB and start the device.
    Sign in with your existing password; your internal game library and
    settings remain available.
+
+The completion screen initially selects **Finish and power off**. Choosing
+**Continue using USB** keeps the current USB session running; it does not
+switch HOME to the installed system. Leave the USB connected until shutdown.
 
 The update leaves the installed DATA partition and partition layout in place.
 It does not copy additional games from the USB into the existing installation.

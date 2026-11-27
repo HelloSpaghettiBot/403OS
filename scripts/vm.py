@@ -485,6 +485,57 @@ def authenticate_profile(vm, summary, required=False):
     summary['checks']['profile_password_enrollment_or_login']='PASS'
 
 
+def exercise_game_launches(vm, systems):
+    """Launch retained games through HOME, including its profile supervisor."""
+    # Matches the system IDs sorted by read_library's std::map, including empty
+    # systems. Selecting a system avoids relying on private title ordering.
+    order=sorted(['dreamcast','gamecube','gb','gbc','gba','genesis','n64','nds','nes','ps1','psp','snes'])
+    cores={'gba':'mGBA','gb':'Gambatte','gbc':'Gambatte','nes':'FCEUmm','snes':'Snes9x',
+           'n64':'Mupen64Plus-Next','nds':'melonDS DS','ps1':'PCSX-ReARMed',
+           'genesis':'Genesis Plus GX','psp':'PPSSPP','dreamcast':'Flycast'}
+    results={}
+    for index,system in enumerate(systems):
+        vm.key('esc');vm.key('down')
+        if index==0:vm.key('right') # ordinary acceptance begins with dock zero
+        start=len(vm.log.read_text(errors='replace'));vm.key('ret')
+        vm.wait_for('action=4 tile=0 zone=0 overlay=0',15,after=start)
+        for tile in range(order.index(system)):
+            start=len(vm.log.read_text(errors='replace'));vm.key('right')
+            vm.wait_for(f'action=1 tile={tile+1} zone=0 overlay=0',10,after=start)
+        start=len(vm.log.read_text(errors='replace'));vm.key('ret')
+        vm.wait_for('action=4 tile=0 zone=0 overlay=0',15,after=start)
+        time.sleep(1)
+        before=vm.screenshot('game-'+system+'-selected.png')
+        start=len(vm.log.read_text(errors='replace'))
+        vm.key('ret')
+        vm.wait_for('SURFACE_APPLICATION_START',20,after=start)
+        vm.wait_for('SURFACE_PROFILE_APP_IDENTITY ',20,after=start)
+        vm.wait_for('EMULATOR_RUNNING ',60,after=start)
+        time.sleep(5)
+        log=vm.log.read_text(errors='replace')[start:]
+        if 'SURFACE_APPLICATION_RETURN' in log or 'EMULATOR_ERROR ' in log:
+            raise RuntimeError(system+' game exited or reported a runtime error after HOME launch')
+        vm.changed_screenshot('game-'+system+'-running.png',before)
+        vm.chord(['ctrl','alt','home'])
+        vm.wait_for('SURFACE_GLOBAL_HOME_REQUEST',10,after=start)
+        vm.wait_for('SURFACE_APPLICATION_RETURN status=0',20,after=start)
+        vm.wait_for('SURFACE_HOME_FOCUS_READY',10,after=start)
+        vm.screenshot('game-'+system+'-returned.png')
+        log=vm.log.read_text(errors='replace')[start:]
+        core=re.search(r'^EMULATOR_CORE name=(.*?) version=',log,re.M)
+        if not core or core.group(1)!=cores[system]:
+            raise RuntimeError('HOME launch did not identify the expected '+system+' emulator core')
+        stopped=re.search(r'^EMULATOR_STOPPED runs=(\d+) video_frames=(\d+)',log,re.M)
+        if not stopped or min(map(int,stopped.groups()))<1:
+            raise RuntimeError(system+' game did not report rendered frames and a clean emulator stop')
+        results[system]={'status':'PASS','core':core.group(1),
+                         'video_frames':int(stopped.group(2)),
+                         'sram_written':'EMULATOR_SRAM_SAVED ' in log,
+                         'scope':'HOME launch, runtime, framebuffer and clean global return'}
+    vm.key('esc');vm.key('down');vm.key('left');vm.key('ret')
+    return results
+
+
 def exercise_profiles(vm, summary, create=False):
     """Create/switch a real Unix profile and launch its browser through HOME."""
     def offset():return len(vm.log.read_text(errors='replace'))
@@ -621,9 +672,9 @@ def exercise_install_ui(vm):
     start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
     vm.wait_for('SURFACE_INSTALL_UI_COMPLETE ',1200,after=start)
     vm.screenshot('installer-complete.png')
-    # Completion defaults to Return HOME; select Power off, then explicitly
-    # confirm its second Cancel-default review and require real QEMU shutdown.
-    vm.key('up');vm.key('ret');vm.key('up');vm.key('ret');vm.process.wait(timeout=45)
+    # Finish defaults to power off only after the verified operation. A real
+    # user action is still required; completion never switches a running root.
+    vm.key('ret');vm.process.wait(timeout=45)
     if vm.process.returncode!=0:raise RuntimeError('GUI installer did not power off cleanly')
     return str(vm.directory/'ui-install-target.qcow2')
 
@@ -655,7 +706,7 @@ def exercise_update_ui(vm):
     start=len(vm.log.read_text(errors='replace'));vm.key('up');vm.key('ret')
     vm.wait_for('SURFACE_UPDATE_UI_COMPLETE data_preserved=1',1200,after=start)
     vm.screenshot('update-complete.png')
-    vm.key('up');vm.key('ret');vm.key('up');vm.key('ret');vm.process.wait(timeout=45)
+    vm.key('ret');vm.process.wait(timeout=45)
     if vm.process.returncode!=0:raise RuntimeError('GUI updater did not power off cleanly')
     return str(target)
 
@@ -812,6 +863,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--test-profiles',action='store_true',help='Require actual profile enrollment/login and reject an incorrect login password')
     parser.add_argument('--create-test-profile',action='store_true',help='Create the synthetic secondary profile on an existing root-only disposable disk')
     parser.add_argument('--expect-existing-profile',action='store_true',help='Require installed login with the existing fixture password instead of enrolling again')
+    parser.add_argument('--test-game-launch',action='append',default=[],choices=['gb','gbc','gba','genesis','n64','nds','nes','ps1','psp','snes','dreamcast'],help='Launch the first retained game for this system through HOME and return cleanly; repeat for multiple systems')
     parser.add_argument('--test-rotation',action='store_true',help='Require actual live Weston rotation with preserved browser/compositor processes')
     parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
     parser.add_argument('--test-attached-update-usb',action='store_true',help='Detect USB update media inserted after installed HOME while protecting the running disk')
@@ -853,6 +905,8 @@ def parse_arguments(argv=None):
         parser.error('--create-test-profile requires --test-profiles')
     if args.expect_existing_profile and (args.mode!='test' or args.disk is None):
         parser.error('--expect-existing-profile requires an explicit installed --disk')
+    if args.test_game_launch and (args.mode!='test' or args.disk is None or args.test_install_ui or args.test_update_ui):
+        parser.error('--test-game-launch requires an explicit installed --disk')
     if args.test_rotation and args.mode=='install':
         parser.error('--test-rotation requires a live or installed graphical boot')
     if args.test_attached_update_usb and (args.mode!='test' or args.disk is None):
@@ -1092,6 +1146,9 @@ def main():
                 vm.wait_for('SURFACE_ARTWORK_LOADED /data/library/covers/',30)
                 summary['checks']['embedded_private_library_and_cover_loading']='PASS'
                 summary['embedded_library_games']=args.expect_library_games
+            if args.test_game_launch:
+                summary['game_launches']=exercise_game_launches(vm,args.test_game_launch)
+                summary['checks']['retained_games_home_launch_and_return']='PASS'
             # Launch the browser through the real HOME dock, then close it
             # through the global evdev chord while HOME has no keyboard focus.
             offset=len(vm.log.read_text(errors="replace"))

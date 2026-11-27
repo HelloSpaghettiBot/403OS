@@ -156,6 +156,13 @@ void activate(Model& model, Process& child, Session& session) {
     if(model.selected().id=="moonlight") { session.controls.open(PanelKind::Moonlight);return; }
     if(model.selected().id == "diagnostics") { model.overlay=true; return; }
     if(model.selected().executable.empty()) { model.message="No compatible emulator engine is installed for this system."; return; }
+    if(model.selected().game) {
+        std::error_code error;
+        if(!std::filesystem::is_regular_file(model.selected().rom_path,error)) {
+            model.message="The game file is unavailable. Reconnect its storage drive, or restore a copy on this device.";
+            return;
+        }
+    }
     std::vector<std::string> command{model.selected().executable};
     command.insert(command.end(),model.selected().arguments.begin(),model.selected().arguments.end());
     const auto profile=session.controls.currentProfile();
@@ -213,7 +220,8 @@ int main(int argc, char** argv) {
                  {"windows","Windows applications","Wine and Proton compatibility",""}});
     for(auto& app:model.apps) if(!app.executable.empty() && !std::filesystem::exists(app.executable))
         app.subtitle="Application is not installed";
-    if(std::filesystem::is_regular_file("/data/SurfaceGoGamingOS/surface-go.img"))
+    model.live_session=std::filesystem::is_regular_file("/data/SurfaceGoGamingOS/surface-go.img");
+    if(model.live_session)
         model.apps.insert(model.apps.begin(),{"install","Update or install 403 OS","Keep games and settings when updating",""});
     Session session;
     const char* catalog=std::getenv("SURFACE_LIBRARY");
@@ -235,6 +243,7 @@ int main(int argc, char** argv) {
     if(profiles_enabled) {
         std::puts("SURFACE_PROFILE_PROTOCOL 1");std::fflush(stdout);
         child.useProfiles(true);session.controls.enableProfiles();
+        child.failureLog("/data/logs/application-launch.log");
         model.apps=session.pinned;model.tile=0;
     }
     GlobalHomeInput global_home;

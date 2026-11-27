@@ -27,11 +27,13 @@ Library read_library(const std::filesystem::path& catalog) {
     while(std::getline(file,line)) {
         std::istringstream row(line);std::vector<std::string> parts;std::string value;
         while(std::getline(row,value,'\t')) parts.push_back(value);
-        if(parts.size()<4 || parts[0].empty() || parts[1].empty() || !std::filesystem::is_regular_file(parts[3])) continue;
+        if(parts.size()<4 || parts[0].empty() || parts[1].empty()) continue;
+        std::error_code error;
+        if(!std::filesystem::is_regular_file(parts[3],error)) continue;
         const auto info=systems.find(parts[2]);
         const auto system_name=info==systems.end()?parts[2]:info->second.name;
         App app{parts[0],parts[1],system_name,"/usr/bin/surface-emulator"};
-        app.game=true;app.system=system_name;if(parts.size()>4)app.artwork=parts[4];
+        app.game=true;app.system=system_name;app.rom_path=parts[3];if(parts.size()>4)app.artwork=parts[4];
         if(info==systems.end()) {
             app.executable.clear();app.subtitle+=" - no compatible engine";
         } else if(parts[2]=="gamecube") {

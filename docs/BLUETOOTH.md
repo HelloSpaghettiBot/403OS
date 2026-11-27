@@ -13,6 +13,14 @@ Confirmation starts on **Reject**; rejection or cancellation does not trust
 or connect the device. Success requires the device to report that it is paired,
 trusted and connected. **Connect** reconnects without pairing again.
 
+Connection now starts before waiting for controller services. BlueZ uses
+Connect to initiate service discovery, so waiting first could leave an already
+paired controller stuck at **Discovering the controller input profile**.
+An operation already in progress is retried within a bounded deadline. Service
+discovery failures keep the saved pairing and offer reconnection; success still
+requires a real Linux gamepad input device. See the
+[BlueZ Device API](https://bluez.readthedocs.io/en/latest/device-api/).
+
 Scanning runs for 20 seconds and fills in device names as they arrive. Keep
 your controller in pairing mode until the scan finishes. Named devices appear
 first, with a short address suffix to distinguish identical controllers.

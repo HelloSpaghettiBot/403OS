@@ -15,6 +15,7 @@ struct App {
     bool favorite = false;
     std::uint64_t play_seconds = 0, last_played = 0;
     unsigned performance = 0;
+    std::string rom_path{};
 };
 enum class Page { Home, Systems, Games, Favorites, Recent, Search };
 inline constexpr float ui_width=1600.0F, ui_height=1066.0F;
@@ -31,6 +32,7 @@ public:
     bool shutdown_confirmation = false;
     bool details = false;
     bool application_running = false;
+    bool live_session = false;
     std::string message;
     Page page = Page::Home;
 };

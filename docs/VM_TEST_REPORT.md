@@ -1,8 +1,82 @@
 # VM test report
 
+## November 26: current image live boot and update
+
+UEFI run `20261126-185544-live` tested the current image and embedded payload
+listed below, using OVMF/KVM, four virtual CPUs, 4 GiB RAM, a 1800×1200 virtio
+framebuffer and an older disposable SATA installation. Root and DATA selected
+the USB correctly. Every executed check passed; overall status is PARTIAL for
+physical hardware, additional boots, recovery and enrolled streaming.
+
+The simulated iPega's separate keyboard and mouse interfaces stayed outside
+the gamepad list. Its default profile and real evdev input worked in the
+unprivileged SDL mapper and a real NES core. HOME responded to D-pad and analog
+navigation; the graphical mapper opened and returned with the controller B
+button. This validates the shipped HID/input path, not a Bluetooth radio.
+
+The production updater completed its Cancel-default review, verified the
+source and recovery backup, and copied/read back both system partitions. After
+the completion event, one explicit Enter on the default Finish action powered
+off QEMU cleanly. Completion and shutdown were verified in the runtime log.
+
+An independent complete read-only byte comparison verified the updated disk:
+
+| Compared range | Bytes | Result |
+| --- | ---: | --- |
+| Disk prefix and primary GPT | 1,048,576 | Unchanged |
+| Entire DATA region and backup GPT | 66,503,835,648 | Unchanged |
+| EFI and root system partitions | 2,214,592,512 | Exact match to current payload |
+
+All eleven emulator probes, NES input/SRAM reload, browser/global HOME return,
+networking, live rotation and non-silent audio passed. BlueZ service, transport,
+client output, crypto, local sockets and private diagnostics also passed.
+Physical controller service discovery, pairing, reconnect and gameplay remain
+unverified. Late USB insertion evidence below belongs to the preceding
+revision's `20261126-181352-test` run.
+
+Detached UEFI run `20261126-190631-test` booted an overlay of the updated SATA
+disk with no installer USB attached. The existing root password authenticated
+without enrollment, and the retained 28-game catalog and covers loaded. Games
+launched through HOME and its profile supervisor using the expected cores:
+
+| System | Core | Rendered frames | SRAM written | HOME return |
+| --- | --- | ---: | --- | --- |
+| GBA | mGBA | 32 | Yes | Clean |
+| N64 | Mupen64Plus-Next | 57 | Yes | Clean |
+| SNES | Snes9x | 39 | Yes | Clean |
+
+These are bounded launch/save checks, not gameplay or performance certification.
+The detached run also passed the browser/global return, all eleven engine
+probes, network, audio and normal GUI poweroff. All executed checks passed;
+physical hardware, interrupted-update recovery and enrolled streaming remain
+separate acceptance work.
+
+Current focused source validation passed 24 pairing tests within 72 unique
+Bluetooth tests, native core and control tests, and 14 VM safety tests. These
+fixture checks supplement the current runtime results without simulating a
+physical Bluetooth radio.
+
+## November 26: game launch and Bluetooth discovery follow-up
+
+Detached UEFI run `20261126-184143-test` booted the previously delivered update
+on a disposable SATA installation, without installer media. Its existing root
+password and 28-game catalog were retained. Games launched through HOME and
+the profile supervisor using mGBA, Mupen64Plus-Next and Snes9x; all three
+rendered frames, wrote SRAM and returned cleanly through the global HOME
+shortcut. The harness checks the actual core identity, avoiding a false pass
+from selecting a different system. This establishes the installed launch path
+in QEMU, not the state of a physical Surface installation.
+
+The Bluetooth service-discovery failure was reproduced independently on a
+private D-Bus. An already-paired disconnected fixture left ServicesResolved
+false until Connect, but the old helper never issued Connect. The corrected
+helper passed 24 pairing tests. Across compatible host interpreters, 72 unique
+Bluetooth tests passed; these include the protocol fixtures and existing
+recovery/input tests. They do not emulate a radio or certify a physical pad.
+
 ## November 26: controller and update follow-up
 
-UEFI run `20261126-143828-live` tested the current image with a disposable
+UEFI run `20261126-143828-live` tested the preceding image with a disposable
 64 GiB SATA installation attached. All executed checks passed. The graphical
 updater detected the installed disk, defaulted its review to Cancel, verified
 the source, created and verified an EFI/root recovery copy, replaced and read
@@ -106,8 +180,8 @@ suspend the host. Source checks do not establish Surface sleep or pairing.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `44b486340364fcef8769a1b21427ed13da9063ade2dc3a9c74178e9af7c418f3` |
-| Pristine installation payload | `72dafbc2f3f4d576ce33d2b3a76b132b44d6eeb754748877acf18a7b31944fa5` |
+| Public live USB | `5ced07f48837bb826a330de08a0f83a4206690024c64af0b098bb6737c5ca617` |
+| Pristine installation payload | `44838eeffed3f3a5fcb79a681f5d5a0de78db9f075817c0f1f5035ce0d28f50d` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.

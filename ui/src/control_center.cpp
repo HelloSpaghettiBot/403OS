@@ -638,7 +638,6 @@ struct ControlCenter::Impl {
     control_detail::ReleaseStatus release;
     Clock::time_point releaseRefresh{};
     InstallStage installStage=InstallStage::Disks;
-    bool installPowerConfirm=false;
     bool pokeInstalled=false,pokeConfirm=false;
     bool pokeRomConfirm=false;
     std::string pokeSource="/library/roms";
@@ -880,8 +879,7 @@ struct ControlCenter::Impl {
                 else if(installReview) view.rows=installReview->rows();
             } else if(installStage==InstallStage::Running) view.rows={installStep,"Target: "+plannedTarget.model+" ("+plannedTarget.path+")","Keep power connected and the USB inserted",updateExisting?"Your games and profiles remain in their existing storage":"Installation will finish after all verification steps"};
             else if(installStage==InstallStage::Done) {
-                if(installPowerConfirm) view.rows={"Confirm power off","Cancel"};
-                else view.rows={"Power off, then remove USB before powering on","Return to HOME"};
+                view.rows={"Finish and power off","Continue using USB - keep it connected"};
             }
             else {
                 view.rows={"Refresh disks and installer USB",installSources.empty()?"Installer image not found on this USB":"Installer USB ready"+std::string(installSources.size()>1?" (select to change source)":"")};
@@ -950,7 +948,7 @@ struct ControlCenter::Impl {
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
-            updateExisting=existingUpdate;installPowerConfirm=false;refreshInstallation();
+            updateExisting=existingUpdate;refreshInstallation();
         } else if(kind==PanelKind::PokeMMO) {
             pokeConfirm=pokeRomConfirm=false; pokeInstalled=fs::is_regular_file("/data/apps/pokemmo/client/PokeMMO.sh") && access("/data/apps/pokemmo/jre/bin/java",X_OK)==0; rows();
             start(Job::PokeStatus,{"pokemmo-setup","--status"},"Checking the local PokeMMO installation");
@@ -1183,11 +1181,7 @@ struct ControlCenter::Impl {
                     }
                 } else if(choice==control_detail::InstallReview::Cancel) cancelStorageReview();
             } else if(installStage==InstallStage::Done) {
-                if(installPowerConfirm) {
-                    installPowerConfirm=false; view.selected=1; rows();
-                    if(choice==0) mutate(Job::InstallPoweroff,{"poweroff"},"Powering off. Remove USB only after shutdown, then power the Surface on");
-                    else view.status="Power off cancelled. Keep the running USB boot media connected";
-                } else if(choice==0) { installPowerConfirm=true; view.selected=1; rows(); view.status="Power off now? After shutdown, remove USB boot media before powering the Surface on to boot internal storage"; }
+                if(choice==0) mutate(Job::InstallPoweroff,{"poweroff"},"Powering off. Remove USB only after shutdown, then power the Surface on");
                 else opened=false;
             }
             break;
@@ -1601,7 +1595,7 @@ struct ControlCenter::Impl {
             const auto list=lines(output);
             if(list.empty() || jsonString(list.back(),"event")!="complete" || !jsonBool(list.back(),"data_expansion_verified") || !jsonBool(list.back(),"user_data_verified") || jsonNumber(list.back(),"data_actual_bytes")!=plannedDataBytes) { std::printf("SURFACE_INSTALL_UI_FAILURE\n"); std::fflush(stdout); view.status="Installation did not finish verifying the system, games and profiles. Keep the USB connected and retry"; installStage=InstallStage::Disks; rows(); break; }
             std::printf("SURFACE_INSTALL_UI_COMPLETE bytes=%llu\n",static_cast<unsigned long long>(plannedDataBytes)); std::fflush(stdout);
-            installStage=InstallStage::Done; installPowerConfirm=false; view.selected=1; rows(); view.status="403 OS, your games, saves and profiles are installed and verified. Your password stays the same. Power off, remove the USB, then power on"; break;
+            installStage=InstallStage::Done; view.selected=0; rows(); view.status="Installation verified, including your games and profiles. This session is still running from USB. Choose Finish, wait for shutdown, remove the USB, then power on to use the installed system"; break;
         }
         case Job::UpdateExecute:
             if(!updateReview || !updateReview->completed(output)) {
@@ -1609,8 +1603,8 @@ struct ControlCenter::Impl {
                 view.status="The update did not report a verified system and unchanged game storage. Keep the USB connected and save the recovery details before starting the internal system";break;
             }
             std::printf("SURFACE_UPDATE_UI_COMPLETE data_preserved=1\n");std::fflush(stdout);
-            installStage=InstallStage::Done;installPowerConfirm=false;view.selected=1;rows();
-            view.status="403 OS is updated and verified. Your games, saves, profiles and passwords are unchanged. Power off, remove the USB, then power on";break;
+            installStage=InstallStage::Done;view.selected=0;rows();
+            view.status="Update verified; installed games and profiles are unchanged. This session is still running from USB. Choose Finish, wait for shutdown, remove the USB, then power on to use the installed system";break;
         case Job::InstallPoweroff: view.status="Power off requested. After shutdown, remove USB boot media, then power on"; break;
         case Job::Reboot: view.status="Restart requested"; break;
         case Job::Suspend: view.status=failed?diagnostic:"Sleep requested; storage work finishes before suspending"; break;
@@ -1863,7 +1857,6 @@ struct ControlCenter::Impl {
             else if(panel==PanelKind::DW3 && dw3Confirm) { dw3Confirm=false; view.selected=2; rows(); view.status="Import cancelled"; }
             else if((panel==PanelKind::DW3 || panel==PanelKind::Windows) && protonConfirm) { protonConfirm=false; view.selected=panel==PanelKind::DW3?6:4; rows(); view.status="Proton setup cancelled"; }
             else if(panel==PanelKind::Install && installStage==InstallStage::Review) cancelStorageReview();
-            else if(panel==PanelKind::Install && installPowerConfirm) { installPowerConfirm=false; view.selected=1; rows(); view.status="Power off cancelled. Keep the running USB boot media connected"; }
             else if(btDetail && panel==PanelKind::Bluetooth) { btDetail=false; view.selected=0; rows(); }
             else if(locked()) { clearProfilePassword();rows();view.status="Sign in to unlock HOME"; }
             else if(returnSettings) open(PanelKind::Settings);

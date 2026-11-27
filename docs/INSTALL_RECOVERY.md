@@ -169,8 +169,13 @@ remains under validation.
    password hashes are retained, so the same passwords unlock the installed
    system. Wait for the final verified completion result; progress alone is
    not completion.
-5. Choose **Power off**. After shutdown, remove the USB and start the device
+5. Choose **Finish and power off**. After shutdown, remove the USB and start the device
    from internal storage. There is no automatic reboot.
+
+Installation does not move the running USB session onto the internal drive.
+**Continue using USB** leaves HOME and applications running from the USB;
+keep it connected until shutdown. HOME labels this as a USB live session and
+shows whether each game is stored on this device or on an external drive.
 
 Removing the USB after installation lets the firmware start the internal
 system normally. To return to a live session, reconnect the USB and select

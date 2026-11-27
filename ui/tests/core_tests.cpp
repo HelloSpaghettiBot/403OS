@@ -40,11 +40,15 @@ int main() {
     {
         const auto game=temp/"Game with spaces.gba";
         std::ofstream(game)<<"fixture";
+        const auto unavailable=temp/"unavailable-volume";
+        std::filesystem::create_symlink(unavailable,unavailable);
         std::ofstream(temp/"catalog.tsv")<<"game1\tFixture title\tgba\t"<<game.string()<<"\t\n"
-                                        <<"bad\tMissing\tnds\t/missing/game.nds\t\n";
+                                        <<"bad\tMissing\tnds\t/missing/game.nds\t\n"
+                                        <<"unavailable\tUnavailable drive\tgba\t"<<unavailable.string()<<"/game.gba\t\n";
         auto library=read_library(temp/"catalog.tsv");
         CHECK(library.games.size()==1 && library.games[0].game);
         CHECK(library.games[0].arguments[3]==game.string());
+        CHECK(library.games[0].rom_path==game.string());
         ProgressStore state(temp/"home/progress.tsv");
         state.favorite("game1",true);state.played("game1",71,123456);state.performance("game1",2);
         ProgressStore reloaded(temp/"home/progress.tsv");reloaded.apply(library.games);
@@ -53,8 +57,28 @@ int main() {
         ProgressStore again(temp/"home/progress.tsv");again.apply(library.games);
         CHECK(!library.games[0].favorite && library.games[0].play_seconds==80 && library.games[0].last_played==123999);
     }
-    std::filesystem::remove_all(temp);
-    Process p; CHECK(!p.start({"/missing/surface-browser"})); CHECK(!p.running()); CHECK(!p.error.empty());
+    Process p;p.failureLog((temp/"launch.log").string());
+    CHECK(!p.start({"/missing/surface-browser"})); CHECK(!p.running());
+    CHECK(p.error.find("executable lookup")!=std::string::npos);
+    CHECK(p.error.find("error 2")!=std::string::npos);
+    auto read=[](const auto& path) {std::ifstream input(path);return std::string(std::istreambuf_iterator<char>(input),{});};
+    CHECK(read(temp/"launch.log").find(p.error)!=std::string::npos);
+    CHECK(!p.start({"relative-command"}));CHECK(p.error.find("absolute path required")!=std::string::npos);
+    const auto denied=temp/"no-permission";std::ofstream(denied)<<"#!/bin/sh\nexit 0\n";
+    CHECK(!p.start({denied.string()}));CHECK(p.error.find("execute permission")!=std::string::npos);
+    CHECK(p.error.find("error 13")!=std::string::npos);
+    CHECK(read(temp/"launch.log").find("relative-command")==std::string::npos);
+    CHECK(!p.start({temp.string()}));CHECK(p.error.find("not a regular executable")!=std::string::npos);
+    const auto loader=temp/"missing-loader";std::ofstream(loader)<<"#!/missing/surface-interpreter\n";
+    std::filesystem::permissions(loader,std::filesystem::perms::owner_all);
+    CHECK(!p.start({loader.string()}));CHECK(p.error.find("process launch")!=std::string::npos);
+    CHECK(p.error.find("error 2")!=std::string::npos);
+    const auto sentinel=temp/"sentinel";std::ofstream(sentinel)<<"preserve";
+    std::filesystem::remove(temp/"launch.log");std::filesystem::create_symlink(sentinel,temp/"launch.log");
+    CHECK(!p.start({"/missing/executable"}));CHECK(read(sentinel)=="preserve");
+    std::filesystem::remove(temp/"launch.log");std::filesystem::create_hard_link(sentinel,temp/"launch.log");
+    CHECK(!p.start({"/missing/executable"}));CHECK(read(sentinel)=="preserve");
+    p.failureLog({});std::filesystem::remove_all(temp);
     CHECK(p.start({"/bin/false"})); CHECK(!p.start({"/bin/true"}));
     std::optional<int> code;
     for(int i=0;i<100 && !code;++i) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); code=p.poll(); }

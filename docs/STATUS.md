@@ -1,5 +1,17 @@
 # Status — November 26, 2026
 
+The controller service-discovery follow-up fixes a confirmed ordering error:
+Connect now initiates SDP/GATT before waiting for resolved services. Saved
+pairings survive bounded busy retries and service failures. The previous code
+reproduced the reported timeout on a private D-Bus; the corrected helper passed
+24 pairing tests. Physical iPega reconnection remains an acceptance step.
+
+Verified installation/update completion now selects **Finish and power off**.
+Continued USB use is labeled explicitly, as are internal and external game
+locations. HOME skips inaccessible catalog paths and checks that a game's file
+is still available before launch. Executable failures show their real lookup,
+permission or spawn error and save the latest private diagnostic locally.
+
 403 OS is a development preview. The current revision classifies separate
 iPega keyboard, mouse and gamepad interfaces by their actual capabilities and
 adds HOME left-stick navigation. Physical iPega HOME/gameplay acceptance remains
@@ -18,19 +30,37 @@ been published; installation of updates continues to use the live USB.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `44b486340364fcef8769a1b21427ed13da9063ade2dc3a9c74178e9af7c418f3` |
-| Pristine internal-install image | `72dafbc2f3f4d576ce33d2b3a76b132b44d6eeb754748877acf18a7b31944fa5` |
+| Public live USB | `5ced07f48837bb826a330de08a0f83a4206690024c64af0b098bb6737c5ca617` |
+| Pristine internal-install image | `44838eeffed3f3a5fcb79a681f5d5a0de78db9f075817c0f1f5035ce0d28f50d` |
 
 Both images are 6,510,628,864 logical bytes. Packaging verified the complete
-embedded installation payload. The current-image UEFI run passed simulated
-controller input and the graphical update. Independent complete reads verified
-that all installed DATA and GPT bytes stayed unchanged, and the replacement
-EFI/root bytes matched the payload. The updated SATA system cold-booted with
-its existing password and library, detected an installer USB inserted after
-HOME, displayed its running internal drive, and shut down cleanly.
+embedded installation payload. Current-image UEFI run `20261126-185544-live`
+passed simulated iPega input through the unprivileged mapper, a real NES core,
+HOME D-pad/analog navigation and the graphical mapper. The production updater
+verified the recovery backup and new system partitions; one explicit Finish
+action then powered off the VM. Independent complete reads verified that all
+installed DATA and GPT bytes stayed unchanged and EFI/root matched the payload.
+All executed checks passed; overall status remains PARTIAL for physical
+hardware, recovery and enrolled streaming. No physical Bluetooth radio was
+tested. Detached UEFI run `20261126-190631-test` then booted the updated SATA
+disk without USB, authenticated the existing password and loaded the retained
+28-game library. GBA, N64 and SNES games launched through HOME, rendered frames,
+wrote saves and returned cleanly. The installed system powered off normally.
 
-Source validation: 463 main Python tests completed with 23 environment-dependent
-skips; the 23 updater tests also passed after the final journal regression fix.
+For the preceding revision, `20261126-143828-live` passed the update and
+`20261126-181352-test` cold-booted its updated SATA system with the existing
+password and library. That detached run detected an installer USB inserted
+after HOME, identified the running internal drive, and shut down cleanly.
+Late USB insertion has not been repeated on the current image.
+
+Current focused source checks passed 24 pairing tests and 72 unique Bluetooth
+tests in total, native core and control tests, and 14 VM safety tests. These
+checks cover the service-discovery regression and launch/storage handling;
+they do not establish over-the-air controller pairing on the Surface.
+
+The preceding revision's source validation completed 463 main Python tests with
+23 environment-dependent skips; the 23 updater tests also passed after the
+final journal regression fix.
 All nine compiled native test programs and 49 VM-harness tests passed.
 The prior revision also passed 27 application setup tests. See
 [VM results](VM_TEST_REPORT.md) and [controllers](BLUETOOTH.md) for the distinction
