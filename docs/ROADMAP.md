@@ -4,6 +4,25 @@ Completed source work and executed VM evidence are distinguished from pending
 runtime and hardware acceptance. Details are in [STATUS.md](STATUS.md) and the
 [VM report](VM_TEST_REPORT.md).
 
+## Current follow-up
+
+- [x] Capability-based iPega composite-interface classification, including
+  excluding keyboard/mouse reports from gamepad slots.
+- [x] HOME left-stick navigation with a dead zone and per-device reset.
+- [x] Open storage settings in existing-installation update mode by default.
+- [x] Read-only GitHub stable-release checks, daily schedule, offline retry,
+  explicit Settings check and official release details.
+- [x] Distinguish a detected running internal disk from a missing disk, and
+  discover ext4 installer media inserted after startup.
+- [x] Preserve pending DATA journal replay during system-only update inspection;
+  retain strict clean-filesystem requirements for partition growth.
+- [x] Revised composite-controller and updater VM acceptance, including complete
+  unchanged-DATA/GPT byte comparison (`20261126-143828-live`).
+- [x] Updated SATA cold boot, existing password/library, late USB discovery and
+  visible running internal disk (`20261126-181352-test`).
+- [ ] Retain HOME focus across automatic library refresh.
+- [ ] Physical iPega HOME/gameplay and update acceptance on Surface.
+
 ## Implemented source and fixture checks
 
 - [x] Pinned Buildroot/toolchain/kernel and capped build tooling.

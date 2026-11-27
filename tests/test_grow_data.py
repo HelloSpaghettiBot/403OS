@@ -104,6 +104,28 @@ class DataGrowthTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_system_only_inspection_preserves_pending_internal_journal(self):
+        with self.image.open('r+b') as stream:
+            offset = DATA_START * 512 + 1024
+            stream.seek(offset + 0x5c)
+            stream.write(struct.pack('<II', 4, 4))  # Has journal; needs replay.
+            stream.flush()
+            gpt = grow.read_gpt(stream.fileno(), DISK_BYTES)
+            before = os.pread(stream.fileno(), 1024, offset)
+            with self.assertRaises(grow.Refused):
+                grow.read_ext4(stream.fileno(), gpt['parts'][2])
+            result = grow.read_ext4(stream.fileno(), gpt['parts'][2], allow_journal_recovery=True)
+            self.assertTrue(result['journal_recovery_pending'])
+            self.assertEqual(before, os.pread(stream.fileno(), 1024, offset))
+            with self.assertRaises(grow.Refused):
+                grow.read_ext4(stream.fileno(), gpt['parts'][2], pristine=True, allow_journal_recovery=True)
+            for state, compatible, incompatible in ((2, 4, 4), (1, 0, 4), (1, 4, 12)):
+                stream.seek(offset + 0x3a); stream.write(struct.pack('<H', state))
+                stream.seek(offset + 0x5c); stream.write(struct.pack('<II', compatible, incompatible))
+                stream.flush()
+                with self.assertRaises(grow.Refused):
+                    grow.read_ext4(stream.fileno(), gpt['parts'][2], allow_journal_recovery=True)
+
     def test_plan_is_read_only_reaches_last_usable_and_binds_target_and_gpt(self):
         before = self.image.stat().st_mtime_ns
         gpt, filesystem = inspect(self.image)

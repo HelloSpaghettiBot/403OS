@@ -6,6 +6,7 @@
 #include "surface/progress.hpp"
 #include "surface/control_center.hpp"
 #include "surface/global_home.hpp"
+#include "surface/home_input.hpp"
 #include <cstdlib>
 #include <csignal>
 #include <memory>
@@ -20,42 +21,38 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace surface;
 namespace {
 volatile std::sig_atomic_t session_stop=0;
 void stop_session(int) { session_stop=1; }
-std::optional<Action> action(const SDL_Event& event) {
-    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-        switch(event.key.key) {
-        case SDLK_LEFT: return Action::Left;
-        case SDLK_RIGHT: return Action::Right;
-        case SDLK_UP: return Action::Up;
-        case SDLK_DOWN: return Action::Down;
-        case SDLK_RETURN: case SDLK_SPACE: return Action::Accept;
-        case SDLK_ESCAPE: case SDLK_BACKSPACE: return Action::Back;
-        case SDLK_TAB: return Action::Quick;
-        case SDLK_F: return Action::Favorite;
-        case SDLK_O: return Action::Details;
-        default: break;
-        }
+void controller_report() {
+    // Inventory only: never log key events or controller Bluetooth addresses.
+    if(!std::filesystem::is_regular_file("/etc/surface-image-id") || geteuid()!=0) return;
+    const int directory=open("/data/logs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0) return;
+    const int fd=openat(directory,"controller-input.log",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600);
+    close(directory);if(fd<0) return;
+    FILE* file=fdopen(fd,"w");if(!file){close(fd);return;}
+    int count=0;auto* ids=SDL_GetJoysticks(&count);
+    std::fprintf(file,"SDL input inventory: %d joystick collections\n",count);
+    for(int i=0;ids && i<count && i<32;++i) {
+        const auto id=ids[i];char guid[33]{};
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(id),guid,sizeof(guid));
+        auto* joystick=SDL_OpenJoystick(id);
+        const auto* name=SDL_GetJoystickNameForID(id);
+        std::fprintf(file,"name=%.120s vid=%04x pid=%04x guid=%s gamepad=%d opened=%d buttons=%d axes=%d hats=%d\n",
+            name?name:"unknown",SDL_GetJoystickVendorForID(id),SDL_GetJoystickProductForID(id),guid,
+            SDL_IsGamepad(id),joystick!=nullptr,joystick?SDL_GetNumJoystickButtons(joystick):0,
+            joystick?SDL_GetNumJoystickAxes(joystick):0,joystick?SDL_GetNumJoystickHats(joystick):0);
+        if(joystick) SDL_CloseJoystick(joystick);
     }
-    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-        switch(event.gbutton.button) {
-        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return Action::Left;
-        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return Action::Right;
-        case SDL_GAMEPAD_BUTTON_DPAD_UP: return Action::Up;
-        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return Action::Down;
-        case SDL_GAMEPAD_BUTTON_SOUTH: return Action::Accept;
-        case SDL_GAMEPAD_BUTTON_EAST: return Action::Back;
-        case SDL_GAMEPAD_BUTTON_START: case SDL_GAMEPAD_BUTTON_GUIDE: return Action::Quick;
-        case SDL_GAMEPAD_BUTTON_NORTH: return Action::Favorite;
-        case SDL_GAMEPAD_BUTTON_WEST: return Action::Details;
-        default: break;
-        }
-    }
-    return std::nullopt;
+    SDL_free(ids);std::fclose(file);
 }
+
 struct Session {
     Library library;
     std::vector<App> home;
@@ -217,7 +214,7 @@ int main(int argc, char** argv) {
     for(auto& app:model.apps) if(!app.executable.empty() && !std::filesystem::exists(app.executable))
         app.subtitle="Application is not installed";
     if(std::filesystem::is_regular_file("/data/SurfaceGoGamingOS/surface-go.img"))
-        model.apps.insert(model.apps.begin(),{"install","Install 403 OS","Install to internal storage",""});
+        model.apps.insert(model.apps.begin(),{"install","Update or install 403 OS","Keep games and settings when updating",""});
     Session session;
     const char* catalog=std::getenv("SURFACE_LIBRARY");
     session.catalog=catalog?catalog:"/data/library/catalog.tsv";
@@ -241,6 +238,7 @@ int main(int argc, char** argv) {
         model.apps=session.pinned;model.tile=0;
     }
     GlobalHomeInput global_home;
+    HomeInput home_input;
     Status status = read_status();
     std::future<Status> pending;
     Uint64 next_status=SDL_GetTicks()+2000;
@@ -249,6 +247,7 @@ int main(int argc, char** argv) {
     SDL_JoystickID* ids=SDL_GetGamepads(&count);
     for(int i=0;i<count;++i) if(auto* p=SDL_OpenGamepad(ids[i])) pads.push_back(p);
     SDL_free(ids);
+    controller_report();
     auto draw=[&]{home->draw(model,status,session.controls.active()?&session.controls.view():nullptr);};
     auto resume=[&] { model.overlay=false;model.message.clear();SDL_HideWindow(window); };
     draw();
@@ -294,6 +293,7 @@ int main(int argc, char** argv) {
         bool redraw=false;
         if(SDL_WaitEventTimeout(&event,self_test?1:32)) do {
             if(event.type==SDL_EVENT_QUIT && !(session.controls.active() && session.controls.view().critical)) quit=true;
+            if(event.type==SDL_EVENT_JOYSTICK_ADDED || event.type==SDL_EVENT_JOYSTICK_REMOVED) controller_report();
             if(event.type==SDL_EVENT_GAMEPAD_ADDED && std::none_of(pads.begin(),pads.end(),
                [&](auto* p){return SDL_GetGamepadID(p)==event.gdevice.which;}))
                 if(auto* p=SDL_OpenGamepad(event.gdevice.which)) pads.push_back(p);
@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
                 auto it=std::find_if(pads.begin(),pads.end(),[&](auto* p){return SDL_GetGamepadID(p)==event.gdevice.which;});
                 if(it!=pads.end()) { SDL_CloseGamepad(*it); pads.erase(it); }
             }
-            if(auto a=action(event)) {
+            if(auto a=home_input.action(event)) {
                 if(session.controls.active()) {
                     if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_SPACE && session.controls.view().editing) { /* SDL text input supplies the space. */ }
                     else if(event.type==SDL_EVENT_KEY_DOWN && event.key.key==SDLK_RETURN && session.controls.view().editing) session.controls.submitText();

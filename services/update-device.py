@@ -181,7 +181,7 @@ def inspect_existing(installer, target, require_marker=True):
         gpt = call(grow, 'read_gpt', fd, target['bytes'])
         if gpt['primary']['backup'] != target['bytes'] // 512 - 1:
             raise Refused('The installed backup GPT must be at the end of the target disk')
-        filesystem = call(grow, 'read_ext4', fd, gpt['parts'][2])
+        filesystem = call(grow, 'read_ext4', fd, gpt['parts'][2], allow_journal_recovery=True)
         marker = installed_marker(target, gpt['parts'][1]) if require_marker else None
         return dict(gpt=gpt, filesystem=filesystem, marker=marker)
     finally:
@@ -305,7 +305,7 @@ def protected_metadata(fd, gpt):
 
 def verify_opened_layout(grow, fd, target, existing):
     actual = call(grow, 'read_gpt', fd, target['bytes'])
-    filesystem = call(grow, 'read_ext4', fd, actual['parts'][2])
+    filesystem = call(grow, 'read_ext4', fd, actual['parts'][2], allow_journal_recovery=True)
     if actual['fingerprint'] != existing['gpt']['fingerprint'] or filesystem != existing['filesystem']:
         raise Refused('Opened target GPT or DATA filesystem changed since review')
 

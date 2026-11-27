@@ -29,6 +29,7 @@ C++/SDL3 interface for games, emulators, streaming and system settings.
   saves, settings and password-protected profiles from the live USB.
 - Update an existing installation from USB while keeping its games, saves,
   profiles, passwords and settings, with a verified system recovery copy.
+- Check GitHub for new stable OS releases in **Settings → System updates**.
 
 Supply your own games and required BIOS files. Public builds contain no ROMs,
 commercial game artwork, proprietary clients or account credentials.
@@ -44,6 +45,8 @@ keep using the same profile passwords after installation. Files already on the
 target disk need a separate backup. External game drives remain separate.
 
 ![403 OS installer verifying games and profiles in QEMU](docs/images/installer.png)
+
+![Check for new 403 OS releases in Settings](docs/images/updates.png)
 
 ## Getting started
 

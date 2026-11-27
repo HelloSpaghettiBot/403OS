@@ -131,6 +131,30 @@ class InstallerSafetyTests(unittest.TestCase):
         self.assertFalse(sources[0]['checksum_verified'])  # Full hashing still happens before target writes.
         self.assertEqual(candidate.stat().st_mtime_ns,before)
 
+    def test_late_connected_ext4_installer_is_discovered_read_only(self):
+        partition = self.sys / 'sdb3'; partition.mkdir()
+        (partition / 'partition').write_text('3')
+        (partition / 'dev').write_text('8:19')
+        mount_root = self.base / 'mounts'
+        candidate = mount_root / 'source-sdb3/SurfaceGoGamingOS/surface-go.img'
+        candidate.parent.mkdir(parents=True)
+        os.link(self.image, candidate)
+        os.link(Path(str(self.image)+'.sha256'), Path(str(candidate)+'.sha256'))
+        original_read = Path.read_text
+        def read_text(path, *args, **kwargs):
+            return '' if str(path)=='/proc/self/mountinfo' else original_read(path, *args, **kwargs)
+        with patch.object(installer, 'require_guest'), patch.object(Path, 'read_text', read_text), \
+             patch.object(installer, 'SOURCE_MOUNTS', mount_root), patch.object(installer, 'SYS_BLOCK', self.sys), \
+             patch.object(installer, 'device_family', return_value={'sdb3'}), \
+             patch.object(installer, 'validate_target_node'), \
+             patch.object(installer, 'command', side_effect=['TYPE=ext4\n', '']) as command:
+            sources, errors = installer.discover_sources([dict(name='sdb', usb=True, removable=False)])
+        self.assertEqual(errors, [])
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(command.call_args_list[1].args[0][0:5],
+                         ['mount', '-t', 'ext4', '-o', 'ro,nosuid,nodev,noexec,noload'])
+        self.assertEqual(sources[0]['sha256'], self.digest)
+
     def test_usb_fixed_disks_removable_and_small_targets_rejected(self):
         for name, options in [('sda', {'usb': True}), ('sdb', {'removable': True}),
                               ('sdc', {'size': installer.MINIMUM_TARGET - 512})]:
@@ -152,6 +176,7 @@ class InstallerSafetyTests(unittest.TestCase):
         info = self.info(mounts=mount)
         self.assertFalse(info['eligible'])
         self.assertIn('running boot filesystem', info['reason'])
+        self.assertTrue(info['running_system'])
         mapper = self.base / 'devices/dm-0'
         mapper.mkdir()
         (mapper / 'dev').write_text('253:0')

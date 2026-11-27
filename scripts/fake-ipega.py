@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Host-side iPega Bluetooth HID fixture for the disposable QEMU input test."""
 import fcntl
+import json
 import os
 from pathlib import Path
 import signal
@@ -129,7 +130,7 @@ def setup(fd):
     fcntl.ioctl(fd,UI_DEV_CREATE)
 
 
-def event_path(fd,deadline):
+def event_path(fd,deadline,expected_name=NAME):
     # Resolve only the device made by this descriptor, never a real controller
     # that happens to advertise the same name and product ID on the host.
     buffer=bytearray(128)
@@ -145,7 +146,7 @@ def event_path(fd,deadline):
                 vendor=(base/'id/vendor').read_text().strip().lower().zfill(4)
                 product=(base/'id/product').read_text().strip().lower().zfill(4)
                 name=(base/'name').read_text().strip()
-                if vendor=='1949' and product=='0402' and name==NAME.decode():
+                if vendor=='1949' and product=='0402' and name==expected_name.decode():
                     return '/dev/input/'+node.name
             except OSError:continue
         time.sleep(.05)
@@ -163,10 +164,28 @@ def main():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     fd=os.open('/dev/uinput',os.O_WRONLY|os.O_NONBLOCK|os.O_CLOEXEC)
     created=False
+    siblings=[]
     try:
+        # The physical Surface log exposes three separate HID collections.
+        # Present the non-game collections first to catch player-one theft.
+        paths=[]
+        for suffix in (b' Keyboard', b' Mouse'):
+            child=os.open('/dev/uinput',os.O_WRONLY|os.O_NONBLOCK|os.O_CLOEXEC)
+            siblings.append(child)
+            fcntl.ioctl(child,UI_SET_EVBIT,EV_KEY)
+            if suffix==b' Keyboard':
+                for code in range(1,100):fcntl.ioctl(child,UI_SET_KEYBIT,code)
+            else:
+                fcntl.ioctl(child,UI_SET_KEYBIT,0x110)
+                fcntl.ioctl(child,UI_SET_EVBIT,2)
+                for axis in (0,1):fcntl.ioctl(child,iow('U',102,4),axis)
+            name=b'ipega Extending Game Controller'+suffix
+            fcntl.ioctl(child,UI_DEV_SETUP,struct.pack('=HHHH80sI',BUS_BLUETOOTH,VENDOR,PRODUCT,283,name,0))
+            fcntl.ioctl(child,UI_DEV_CREATE)
+            paths.append(event_path(child,time.monotonic()+5,name))
         setup(fd);created=True
         path=event_path(fd,time.monotonic()+5)
-        print(path,flush=True)
+        print(json.dumps(dict(gamepad=path,collections=paths+[path])),flush=True)
         # QEMU grabs this input; generate no host/guest input until requested.
         for line in sys.stdin:
             if not running:break
@@ -177,6 +196,10 @@ def main():
             else:
                 os.write(fd,struct.pack('@llHHi',0,0,EV_ABS,code,value)+struct.pack('@llHHi',0,0,EV_SYN,0,0))
     finally:
+        for child in siblings:
+            try:fcntl.ioctl(child,UI_DEV_DESTROY)
+            except OSError:pass
+            os.close(child)
         if created:
             try:fcntl.ioctl(fd,UI_DEV_DESTROY)
             except OSError:pass

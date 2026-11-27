@@ -1,4 +1,22 @@
-# Update 403 OS from USB
+# Update 403 OS
+
+## Check for a new version
+
+Open **Settings → System updates → Check for updates**. 403 OS also checks
+GitHub after startup and once a day while running. If the network is offline,
+it retries later. Checks use the public release metadata and send no game
+library, account credentials or device identifiers.
+
+The page shows the installed version, latest stable release and last check.
+**Open GitHub release details** opens the official release page. A release is
+offered as available only when it includes the Surface Go image and a SHA-256
+digest. Source commits and source archives are not OS updates.
+
+No downloadable stable OS release has been published yet. Until one is
+published, the checker says so. Checking never downloads or installs software
+automatically. Installation still uses the USB procedure below.
+
+## Update from USB
 
 Use a newer 403 OS installer USB to update an existing internal installation
 while keeping its games, saves, profiles, passwords and settings. Updates run
@@ -20,7 +38,8 @@ elsewhere before rewriting that USB if you still need it for recovery.
 ## Update the installed system
 
 1. Open **Settings → Install or update**.
-2. Choose **Update existing 403 OS (keep games and settings)**.
+2. The page opens in **Update 403 OS** mode. Use **Install 403 OS instead**
+   only when you intend to erase a disk for a fresh installation.
 3. Select the internal disk containing your existing 403 OS installation.
    Review its identity and capacity. The running USB and disks in use are
    excluded.
@@ -38,6 +57,19 @@ The update leaves the installed DATA partition and partition layout in place.
 It does not copy additional games from the USB into the existing installation.
 Updating uses the image already on the USB; it does not download an update
 over the network.
+
+## Internal drive detected but unavailable
+
+Inserting the USB into an already-running internal installation does not stop
+that installation. The disk list identifies the running drive and explains why
+it cannot be overwritten. Shut down, leave the USB connected, then boot from
+USB and open **Settings → Install or update** again. Choose **Update 403 OS**
+to keep games, profiles and settings; a fresh install erases them.
+
+An unmounted installation with pending normal ext4 journal replay can receive
+a system-only update. DATA stays byte-for-byte unchanged during the update;
+the kernel handles journal replay when the installed system next starts. This
+does not bypass filesystem error flags or permit resizing unclean storage.
 
 ## If an update cannot finish
 

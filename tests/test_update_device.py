@@ -64,7 +64,7 @@ class OfflineUpdateTests(unittest.TestCase):
         self.grow = dict(current_target=lambda *args: dict(target=str(self.target)),
                          open_readonly_target=lambda target: os.open(self.target, os.O_RDONLY),
                          read_gpt=lambda fd, size: copy.deepcopy(self.gpt),
-                         read_ext4=lambda fd, part: dict(self.existing['filesystem']))
+                         read_ext4=lambda fd, part, **kwargs: dict(self.existing['filesystem']))
         self.installer = dict(require_guest=lambda: None, growth_helper=lambda: self.grow,
                               seeding_helper=lambda: dict(mounted_data=lambda: None),
                               source_info=lambda path: dict(self.source_info),
@@ -209,6 +209,20 @@ class OfflineUpdateTests(unittest.TestCase):
         target = dict(self.info, eligible=False, reason='mounted boot filesystem')
         with self.assertRaisesRegex(update.Refused, 'mounted boot filesystem'):
             update.plan_update(target, self.source_info, self.existing, self.gpt)
+
+    def test_pending_data_journal_allowed_through_execution_without_changing_data(self):
+        self.existing['filesystem']['journal_recovery_pending'] = True
+        calls = []
+        def pending(fd, part, **kwargs):
+            calls.append(kwargs)
+            if not kwargs.get('allow_journal_recovery'):
+                raise ValueError('DATA requires journal recovery')
+            return dict(self.existing['filesystem'])
+        self.grow['read_ext4'] = pending
+        self.execute()
+        self.assertGreaterEqual(len(calls), 4)
+        start = self.parts[2]['first'] * 512
+        self.assertEqual(self.target.read_bytes()[start:], self.old[start:])
 
     def test_wrong_os_and_mounted_or_boot_target_never_get_backup_or_write(self):
         with patch.object(update, 'installed_marker', side_effect=update.Refused('not an existing 403 OS')):

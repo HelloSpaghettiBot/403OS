@@ -21,6 +21,10 @@ int main() {
     using namespace surface;
     ControlCenter center;
     assert(!center.active());
+    center.open(PanelKind::Updates);
+    assert(center.view().title=="System updates");
+    assert(center.view().rows.front()=="Check for updates");
+    center.navigate(Action::Back);
     center.open(PanelKind::Moonlight);
     assert(center.active());
     assert(center.view().rows.size()>=3);
@@ -122,7 +126,7 @@ int main() {
         center.open(PanelKind::Install);
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().critical && !center.view().busy);
-        select(center,"Update existing 403 OS");center.navigate(Action::Accept);
+        // Existing-system update is the default; no erase action is preselected.
         assert(center.view().title=="Update 403 OS - choose an installed disk");
         assert(center.view().status.find("only inside")!=std::string::npos);
         assert(!center.view().critical && !center.view().busy && !center.takeLaunch());

@@ -282,13 +282,19 @@ def read_gpt(descriptor, disk_bytes):
     return result
 
 
-def read_ext4(descriptor, partition, pristine=False):
+def read_ext4(descriptor, partition, pristine=False, allow_journal_recovery=False):
     data = exact_read(descriptor, 1024, partition['first'] * SECTOR + 1024)
     magic, state = struct.unpack_from('<HH', data, 0x38)
     exponent = struct.unpack_from('<I', data, 0x18)[0]
     incompat = struct.unpack_from('<I', data, 0x60)[0]
-    if magic != 0xEF53 or exponent > 6 or state != 1 or incompat & 4:
-        raise Refused('DATA must contain a clean ext4 filesystem without journal recovery pending')
+    recovery = bool(incompat & 4)
+    compatible = struct.unpack_from('<I', data, 0x5c)[0]
+    # System-only updates do not mount, resize or write DATA. Preserve its
+    # pending internal journal for the kernel to replay on the next boot.
+    # Fresh-install growth still requires a pristine, clean filesystem.
+    permitted_recovery = allow_journal_recovery and not pristine and compatible & 4 and not incompat & 8
+    if magic != 0xEF53 or exponent > 6 or state != 1 or (recovery and not permitted_recovery):
+        raise Refused('DATA must contain a valid ext4 filesystem; growth requires no journal recovery pending')
     blocks = struct.unpack_from('<I', data, 4)[0]
     if incompat & 0x80:
         blocks |= struct.unpack_from('<I', data, 0x150)[0] << 32
@@ -302,6 +308,7 @@ def read_ext4(descriptor, partition, pristine=False):
     if pristine and (size != ORIGINAL_DATA_BYTES or mount_time != 0 or mount_count != 0 or any(data[0x88:0xc8])):
         raise Refused('Only the original never-mounted 4 GiB cloned DATA filesystem can be grown')
     return dict(uuid=str(uuid.UUID(bytes=data[0x68:0x78])), bytes=size, block_bytes=block_bytes,
+                journal_recovery_pending=recovery,
                 mount_time=mount_time, mount_count=mount_count,
                 superblock_sha256=hashlib.sha256(data).hexdigest())
 

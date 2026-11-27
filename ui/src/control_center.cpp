@@ -260,6 +260,30 @@ std::string storage(const std::string& path) {
 } // namespace
 
 namespace control_detail {
+constexpr const char* releaseURL="https://github.com/HelloSpaghettiBot/403OS/releases";
+struct ReleaseStatus {
+    std::string current,latest,message,checked,url=releaseURL;
+    bool available=false;
+    static std::optional<ReleaseStatus> parse(const std::string& output) {
+        if(jsonString(output,"event")!="update-status" || jsonString(output,"schema")!="403os-update-status-v1" ||
+           jsonString(output,"target")!="surface-go1-x86_64" || jsonString(output,"channel")!="stable") return {};
+        const auto status=jsonString(output,"status");
+        const std::array<std::string,8> valid={"unchecked","available","up_to_date","no_release","no_image","offline","rate_limited","error"};
+        if(status.empty() || std::find(valid.begin(),valid.end(),status)==valid.end()) return {};
+        ReleaseStatus result{jsonString(output,"current_version"),jsonString(output,"latest_version"),
+            jsonString(output,"message"),jsonString(output,"checked_at"),jsonString(output,"release_url"),jsonBool(output,"update_available")};
+        if(result.current.empty() || result.current.size()>64 || result.latest.size()>64 || result.message.empty() || result.message.size()>240 || result.checked.size()>64) return {};
+        // Never open an arbitrary URL from a service/cache response.
+        const auto stable=[](const std::string& version) {
+            return !version.empty() && std::count(version.begin(),version.end(),'.')==2 &&
+                std::all_of(version.begin(),version.end(),[](unsigned char c){return std::isdigit(c) || c=='.';});
+        };
+        if(result.url!=releaseURL && (!stable(result.latest) ||
+           (result.url!=std::string(releaseURL)+"/tag/v"+result.latest && result.url!=std::string(releaseURL)+"/tag/"+result.latest))) return {};
+        if(result.available && (!stable(result.latest) || result.url==releaseURL)) return {};
+        return result;
+    }
+};
 struct BluetoothDevice {
     std::string mac,name;
     std::string label() const { return (name.empty()?"Unnamed Bluetooth device":name)+" ("+mac.substr(9)+")"; }
@@ -573,7 +597,7 @@ using control_detail::Command;
 
 struct ControlCenter::Impl {
     enum class Edit { None,WifiPassword,HiddenSSID,MoonHost,MoonResolution,BrowserURL,LibrarySource,LibrarySearch,DW3Source,PokeSource,WindowsPath,WindowsTitle,ProfileName,ProfilePassword,ProfileConfirm,ProfileLogin,BluetoothPin,BluetoothPasskey };
-    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,UpdateList,UpdatePlan,UpdateExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert,ProfileStatus,ProfileEnroll,ProfileLogin,ProfileCreate,ProfileLogout };
+    enum class Job { None,Mixer,Volume,AudioStore,WpaStatus,WpaStart,WpaScan,WpaResults,WpaAdd,WpaConfigure,WpaWait,Dhcp,WpaDisconnect,WpaForget,BtShow,BtPower,BtScan,BtDevices,BtInfo,BtPair,BtTrust,BtConnect,BtDisconnect,BtForget,TailStatus,TailLogin,TailLogout,MoonPair,MoonApps,MoonDiscover,InstallList,InstallPlan,InstallExecute,UpdateList,UpdatePlan,UpdateExecute,InstallPoweroff,PokeStatus,PokeInstall,LibraryScan,DW3Status,DW3Import,Reboot,Suspend,PokeScan,PokeImport,PokeRomStatus,WindowsStatus,WindowsSetup,LibraryVolumes,WindowsList,WindowsRegister,DisplayStartup,DisplayStatus,DisplaySet,DisplayConfirm,DisplayRevert,ProfileStatus,ProfileEnroll,ProfileLogin,ProfileCreate,ProfileLogout,ReleaseStatus,ReleaseCheck };
     enum class Power { None,Reboot,Suspend };
     struct DisplayMode { std::string output,mode; };
     struct Network { std::string ssid,flags; int signal=0; };
@@ -611,6 +635,8 @@ struct ControlCenter::Impl {
     std::optional<control_detail::UpdateReview> updateReview;
     bool updateExisting=false;
     std::string installStep;
+    control_detail::ReleaseStatus release;
+    Clock::time_point releaseRefresh{};
     InstallStage installStage=InstallStage::Disks;
     bool installPowerConfirm=false;
     bool pokeInstalled=false,pokeConfirm=false;
@@ -789,7 +815,15 @@ struct ControlCenter::Impl {
             if(powerConfirm!=Power::None) view.rows={powerConfirm==Power::Reboot?"Confirm restart":"Confirm suspend","Cancel"};
             else if(systemInfo) {
                 view.rows={"Model: "+readLine("/sys/class/dmi/id/product_name"),"Kernel: "+readLine("/proc/sys/kernel/osrelease"),readLine("/proc/meminfo"),storage("/data"),storage("/"),fs::is_regular_file("/data/config/gamecontrollerdb.txt")?"Saved controller mappings: /data/config/gamecontrollerdb.txt":"Controller mappings: SDL defaults; no custom mappings saved","Return to Settings"};
-            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install or update 403 OS","System and storage information","Restart device","Suspend device","Controllers and button mapping","Windows applications","Display resolution","User profiles"}; break;
+            } else view.rows={"Volume down","Volume up","Toggle mute","Brightness down","Brightness up","Wi-Fi and network","Bluetooth controllers","Tailscale","Moonlight streaming","Open web browser","Install or update 403 OS","System and storage information","Restart device","Suspend device","Controllers and button mapping","Windows applications","Display resolution","User profiles",release.available?"System updates - update available":"System updates"}; break;
+        case PanelKind::Updates:
+            view.title="System updates";
+            view.rows={"Check for updates","Open GitHub release details","Update from USB (keep games and settings)",
+                "Installed: "+(release.current.empty()?"Reading version":release.current),
+                release.latest.empty()?"Latest release: not available":"Latest release: "+release.latest,
+                release.checked.empty()?"Last checked: never":"Last checked: "+release.checked,
+                "Automatic checks: daily; stable releases", "Return to Settings"};
+            break;
         case PanelKind::Profiles:
             view.title=locked()?(profileEnrolled?"Sign in to 403 OS":"Create the root administrator password"):"User profiles";
             if(!profilesEnabled) view.rows={"Profiles require the booted OS image"};
@@ -891,10 +925,10 @@ struct ControlCenter::Impl {
         edit=purpose; view.editing=true; view.secret=secret; view.input=std::move(initial); view.keyboard_index=0; view.status=prompt;
     }
     void cancelEdit() { std::fill(view.input.begin(),view.input.end(),'\0'); view.input.clear(); view.editing=false; view.secret=false; edit=Edit::None; }
-    void open(PanelKind kind) {
+    void open(PanelKind kind,bool existingUpdate=true) {
         if(storageWriting()) { view.status=storageActiveMessage(); return; }
         if(locked() && kind!=PanelKind::Profiles) return;
-        if(profilesEnabled && profile && !admin() && kind!=PanelKind::Profiles && kind!=PanelKind::Settings && kind!=PanelKind::Library) {
+        if(profilesEnabled && profile && !admin() && kind!=PanelKind::Profiles && kind!=PanelKind::Settings && kind!=PanelKind::Library && kind!=PanelKind::Updates) {
             view.status="This system service requires the root administrator";opened=true;return;
         }
         command.cancel(); job=delayed=Job::None; cancelEdit(); panel=kind; opened=true; returnSettings=false;
@@ -904,6 +938,9 @@ struct ControlCenter::Impl {
             if(profilesEnabled) profileRequest(Job::ProfileStatus,"status");
         }
         else if(kind==PanelKind::Settings) start(Job::Mixer,{"amixer","scontrols"},"Reading audio controls");
+        else if(kind==PanelKind::Updates) {
+            if(allowed(false)) start(Job::ReleaseStatus,{"surface-update-check","--status"},"Reading update status");
+        }
         else if(kind==PanelKind::Display) {
             if(allowed()) start(Job::DisplayStatus,{"surface-display","--status"},"Reading connected display modes");
         } else if(kind==PanelKind::Network) {
@@ -913,7 +950,7 @@ struct ControlCenter::Impl {
         else if(kind==PanelKind::Tailscale) start(Job::TailStatus,tail({"status","--json"}),"Reading Tailscale daemon state");
         else if(kind==PanelKind::Moonlight) view.status=host.empty()?"Enter the IP or DNS name of your authorized Sunshine host":"Pair this device, then list the host's available applications";
         else if(kind==PanelKind::Install) {
-            updateExisting=false;installPowerConfirm=false;refreshInstallation();
+            updateExisting=existingUpdate;installPowerConfirm=false;refreshInstallation();
         } else if(kind==PanelKind::PokeMMO) {
             pokeConfirm=pokeRomConfirm=false; pokeInstalled=fs::is_regular_file("/data/apps/pokemmo/client/PokeMMO.sh") && access("/data/apps/pokemmo/jre/bin/java",X_OK)==0; rows();
             start(Job::PokeStatus,{"pokemmo-setup","--status"},"Checking the local PokeMMO installation");
@@ -1018,6 +1055,13 @@ struct ControlCenter::Impl {
             } else if(choice==15) { open(PanelKind::Windows); returnSettings=true; }
             else if(choice==16) { open(PanelKind::Display); returnSettings=true; }
             else if(choice==17) { open(PanelKind::Profiles); returnSettings=true; }
+            else if(choice==18) { open(PanelKind::Updates); returnSettings=true; }
+            break;
+        case PanelKind::Updates:
+            if(choice==0 && allowed(false)) start(Job::ReleaseCheck,{"surface-update-check","--check"},"Checking GitHub for a stable OS update",30);
+            else if(choice==1) browser(release.url);
+            else if(choice==2 && allowed()) { open(PanelKind::Install,true); returnSettings=true; }
+            else if(choice==7) open(PanelKind::Settings);
             break;
         case PanelKind::Display:
             if(displayTrial) mutate(choice==0?Job::DisplayConfirm:Job::DisplayRevert,{"surface-display",choice==0?"--confirm":"--revert"},choice==0?"Saving display resolution":"Restoring previous display resolution");
@@ -1274,6 +1318,22 @@ struct ControlCenter::Impl {
             return;
         }
         const bool ok=code==0;
+        if(isImage() && (completedJob==Job::InstallList || completedJob==Job::UpdateList ||
+           completedJob==Job::InstallPlan || completedJob==Job::UpdatePlan)) {
+            // Keep the last inventory/refusal on the USB for support. Never
+            // store passwords or arbitrary command output in this report.
+            const int directory=::open("/data/logs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+            if(directory>=0) {
+                const int fd=openat(directory,"system-update-review.json",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC,0600);
+                if(fd>=0) {
+                    const auto count=std::min<std::size_t>(output.size(),65536);
+                    const auto written=::write(fd,output.data(),count);
+                    ::close(fd);
+                    if(written!=static_cast<ssize_t>(count)) unlinkat(directory,"system-update-review.json",0);
+                }
+                ::close(directory);
+            }
+        }
         const bool failed=output.find("FAIL")!=std::string::npos || output.find("Failed")!=std::string::npos;
         const auto diagnostic=completedJob==Job::WpaConfigure?"Private Wi-Fi operation failed (command output suppressed)":brief(output);
         if(!ok && (completedJob==Job::InstallList || completedJob==Job::InstallPlan || completedJob==Job::InstallExecute ||
@@ -1292,6 +1352,15 @@ struct ControlCenter::Impl {
         if(!ok && completedJob==Job::WindowsSetup) { const auto list=lines(output); const auto message=list.empty()?std::string{}:jsonString(list.back(),"message"); view.status="Proton setup stopped: "+(message.empty()?diagnostic:message); return; }
         if(!ok && completedJob!=Job::TailStatus && completedJob!=Job::PokeStatus && completedJob!=Job::DW3Status && completedJob!=Job::MoonDiscover && completedJob!=Job::LibraryVolumes) { view.status=(code==124?"Operation timed out: ":"Operation failed: ")+diagnostic; return; }
         switch(completedJob) {
+        case Job::ReleaseStatus: case Job::ReleaseCheck: {
+            const auto result=control_detail::ReleaseStatus::parse(output);
+            if(!result) { view.status="Update service returned invalid release information"; break; }
+            release=*result; releaseRefresh=Clock::now()+std::chrono::seconds(30);
+            rows(); view.status=release.message;
+            if(release.available && completedJob==Job::ReleaseStatus)
+                view.status+=". Last known result; choose Check for updates to refresh";
+            break;
+        }
         case Job::ProfileStatus: case Job::ProfileEnroll: case Job::ProfileLogin: case Job::ProfileCreate: case Job::ProfileLogout: break;
         case Job::DisplayStartup:
         case Job::DisplayStatus: {
@@ -1490,19 +1559,26 @@ struct ControlCenter::Impl {
                 if(path.starts_with('/') && control_detail::installHash(hash)) installSources.push_back({path,hash,jsonNumber(item,"bytes")});
             }
             std::string excluded;
+            bool runningInternal=false;
             for(const auto& item:jsonObjects(output,"targets")) {
                 if(jsonBool(item,"eligible")) installTargets.push_back({jsonString(item,"device"),jsonString(item,"stable_id"),jsonString(item,"model"),jsonNumber(item,"bytes")});
                 else if(excluded.size()<350) {
                     if(!excluded.empty()) excluded+="; ";
                     excluded+=jsonString(item,"device")+": "+jsonString(item,"reason");
                 }
-                if(!jsonBool(item,"eligible")) installUnavailable.push_back("Unavailable: "+jsonString(item,"device")+" - "+jsonString(item,"reason"));
+                if(!jsonBool(item,"eligible")) {
+                    const bool running=jsonBool(item,"running_system") && !jsonBool(item,"usb");
+                    runningInternal=runningInternal || running;
+                    const auto reason=running?"Currently running - boot from the installer USB to update or install":jsonString(item,"reason");
+                    installUnavailable.push_back(jsonString(item,"model")+" | "+control_detail::installCapacity(jsonNumber(item,"bytes"))+" | "+jsonString(item,"device")+" - "+reason);
+                }
             }
             for(const auto& error:jsonStrings(output,"errors")) installUnavailable.push_back("Installer USB: "+error);
             view.selected=installTargets.empty()?0:2;
             rows();
             std::printf(updateExisting?"SURFACE_UPDATE_UI_LIST sources=%zu targets=%zu\n":"SURFACE_INSTALL_UI_LIST sources=%zu targets=%zu\n",installSources.size(),installTargets.size()); std::fflush(stdout);
-            view.status=installSources.empty()?"Installer image missing. Boot an updated 403 OS installer USB, then choose Refresh":
+            view.status=runningInternal?"Your internal drive is detected, but 403 OS is running from it. Shut down, keep the USB connected, then hold Volume Down while pressing Power to boot the USB. Return here to update without erasing games":
+                installSources.empty()?"Installer image missing. Boot an updated 403 OS installer USB, then choose Refresh":
                 updateExisting?(installTargets.empty()?"No existing installation can be updated safely. "+excluded+". Start from the update USB and choose Refresh":
                     "Choose the existing 403 OS disk to update. Your games, saves, profiles and passwords stay on the device"):
                 installTargets.empty()?"No disk can be installed safely. "+excluded+". For a mounted or read-only internal disk, restart from the USB and try Refresh":"Choose the internal disk to install on. You will review it before erasing. The USB and active disks are protected";
@@ -1625,6 +1701,11 @@ struct ControlCenter::Impl {
     }
     void update() {
         command.reap();
+        if(opened && panel==PanelKind::Updates && !locked() && isImage() &&
+           !command.running() && delayed==Job::None && Clock::now()>=releaseRefresh) {
+            releaseRefresh=Clock::now()+std::chrono::seconds(30);
+            start(Job::ReleaseStatus,{"surface-update-check","--status"},"Reading update status");
+        }
         if(opened && panel==PanelKind::Display && displayTrial && !command.running() && Clock::now()>=displayRefresh)
             start(Job::DisplayStatus,{"surface-display","--status"},"Checking resolution confirmation time");
         if(delayed!=Job::None && Clock::now()>=wake && !command.running()) {

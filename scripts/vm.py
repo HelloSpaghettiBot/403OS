@@ -32,8 +32,9 @@ class FakeIpega:
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.errors,text=True,bufsize=1)
         if not select.select([self.process.stdout],[],[],8)[0]:
             self.close();raise RuntimeError('Fake iPega event device did not start')
-        self.path=self.process.stdout.readline().strip()
-        if not re.fullmatch(r'/dev/input/event[0-9]+',self.path):
+        record=json.loads(self.process.stdout.readline())
+        self.path=record['gamepad'];self.paths=record['collections']
+        if not re.fullmatch(r'/dev/input/event[0-9]+',self.path) or len(self.paths)!=3 or any(not re.fullmatch(r'/dev/input/event[0-9]+',p) for p in self.paths):
             self.close();raise RuntimeError('Fake iPega did not return a Linux event device')
         # Wait for host udev permissions before QEMU opens the fixture.
         subprocess.run(['udevadm','settle','--timeout=5'],check=True)
@@ -225,7 +226,8 @@ class VM:
         if args.keyboard_model == 'usb':
             command += ['-device', 'usb-kbd']
         if getattr(args,'ipega_evdev',None):
-            command += ['-device','virtio-input-host-pci,evdev='+args.ipega_evdev]
+            for path in getattr(args,'ipega_collections',[args.ipega_evdev]):
+                command += ['-device','virtio-input-host-pci,evdev='+path]
         if args.sleep_model == 's2idle':
             command += ['-global', 'ICH9-LPC.disable_s3=1']
         options = prepare_test_options(directory, args, disk, install=install, media=media)
@@ -311,6 +313,7 @@ class VM:
                 self.screenshot('installer-failed.png')
                 raise RuntimeError(f'Installer reported failure; see {self.directory}/installer-failed.png')
             if token.startswith('SURFACE_UPDATE_UI_') and 'SURFACE_UPDATE_UI_FAILURE' in data[after:]:
+                time.sleep(3)  # Capture the rendered error, not the previous progress frame.
                 self.screenshot('update-failed.png')
                 raise RuntimeError(f'Updater reported failure; see {self.directory}/update-failed.png')
             if self.process.poll() is not None:
@@ -546,7 +549,7 @@ def exercise_display(vm, width, height):
         for _ in range(6):vm.key('right')
         vm.key('ret');time.sleep(2)
         vm.key('up')
-        if 'SURFACE_PROFILE_PROTOCOL 1' in vm.log.read_text(errors='replace'):vm.key('up')
+        if 'SURFACE_PROFILE_PROTOCOL 1' in vm.log.read_text(errors='replace'):vm.key('up');vm.key('up')
         vm.key('ret')
         return display_view(vm,start,False)
     def apply(view, chosen):
@@ -600,6 +603,10 @@ def exercise_install_ui(vm):
     vm.click_ui(60+6*187+85,904);time.sleep(1)
     for _ in range(10):vm.key('down')
     vm.key('ret')
+    vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
+    # Empty target: select the explicit fresh-install action after the status rows.
+    for _ in range(3):vm.key('down')
+    start=len(vm.log.read_text(errors='replace'));vm.key('ret')
     listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
     match=re.search(r'SURFACE_INSTALL_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
     if not match or int(match[1])<1 or int(match[2])!=1:
@@ -632,12 +639,12 @@ def exercise_update_ui(vm):
     vm.key('tab');vm.key('ret');time.sleep(1)
     for _ in range(10):vm.key('down')
     vm.key('ret')
-    listing=vm.wait_for('SURFACE_INSTALL_UI_LIST ',90,after=start)
-    match=re.search(r'SURFACE_INSTALL_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
+    listing=vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
+    time.sleep(.5)  # Allow the completed inventory to reach the next frame.
+    vm.screenshot('update-disks.png')
+    match=re.search(r'SURFACE_UPDATE_UI_LIST sources=(\d+) targets=(\d+)',listing[start:])
     if not match or int(match[1])<1 or int(match[2])!=1:
         raise RuntimeError('Update acceptance requires exactly one eligible companion and a valid source')
-    start=len(vm.log.read_text(errors='replace'));vm.key('down');vm.key('ret')
-    vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
     vm.screenshot('update-disks.png')
     start=len(vm.log.read_text(errors='replace'));vm.key('ret')
     reviewed=vm.wait_for('SURFACE_UPDATE_UI_REVIEW target=',60,after=start)
@@ -651,6 +658,34 @@ def exercise_update_ui(vm):
     vm.key('up');vm.key('ret');vm.key('up');vm.key('ret');vm.process.wait(timeout=45)
     if vm.process.returncode!=0:raise RuntimeError('GUI updater did not power off cleanly')
     return str(target)
+
+
+def exercise_attached_update_usb(vm, image, library_games=None):
+    """Insert update media after an installed system has reached HOME."""
+    disk = vm.directory / 'late-installer.qcow2'
+    create_live_disk(disk, image)
+    vm.qmp('blockdev-add', {'driver':'qcow2', 'node-name':'late-installer', 'read-only':True,
+                           'file':{'driver':'file','filename':str(disk)}})
+    vm.qmp('device_add', {'driver':'usb-storage','drive':'late-installer','id':'late-installer-usb',
+                          'bus':'xhci.0','serial':'SURFACE_LATE_USB'})
+    time.sleep(3)
+    start=len(vm.log.read_text(errors='replace'))
+    vm.key('tab'); vm.key('ret'); time.sleep(1)
+    for _ in range(10): vm.key('down')
+    vm.key('ret')
+    output=vm.wait_for('SURFACE_UPDATE_UI_LIST ',90,after=start)
+    match=re.search(r'SURFACE_UPDATE_UI_LIST sources=(\d+) targets=(\d+)',output[start:])
+    if not match or int(match[1])<1 or int(match[2])!=0:
+        raise RuntimeError('Late USB must be discovered while the running internal target stays protected')
+    time.sleep(3); vm.screenshot('installed-drive-detected.png')
+    if library_games is not None:
+        # The runtime emulator probe leaves one homebrew cartridge in DATA.
+        # USB insertion triggers a rescan, which rebuilds HOME's model. Let
+        # that known fixture refresh finish before navigating the power dock.
+        vm.wait_for(f'SURFACE_LIBRARY_UPDATED games={library_games+1}',90,after=start)
+    vm.key('esc'); time.sleep(3); vm.key('esc'); time.sleep(2)
+    return {'status':'PASS','inserted_after_home':True,'sources':int(match[1]),
+            'running_disk_not_writable':True}
 
 
 class ReadOnlyVirtualDisk:
@@ -779,6 +814,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--expect-existing-profile',action='store_true',help='Require installed login with the existing fixture password instead of enrolling again')
     parser.add_argument('--test-rotation',action='store_true',help='Require actual live Weston rotation with preserved browser/compositor processes')
     parser.add_argument('--test-install-ui',action='store_true',help='Test click installer into a newly created disposable 64 GiB SATA disk')
+    parser.add_argument('--test-attached-update-usb',action='store_true',help='Detect USB update media inserted after installed HOME while protecting the running disk')
     parser.add_argument('--test-update-ui',action='store_true',help='Update only the disposable overlay of an explicitly supplied installed companion')
     parser.add_argument("--memory", type=int, choices=[3072, 4096], default=4096)
     parser.add_argument("--cpus", type=int, choices=[2, 4], default=4)
@@ -819,6 +855,8 @@ def parse_arguments(argv=None):
         parser.error('--expect-existing-profile requires an explicit installed --disk')
     if args.test_rotation and args.mode=='install':
         parser.error('--test-rotation requires a live or installed graphical boot')
+    if args.test_attached_update_usb and (args.mode!='test' or args.disk is None):
+        parser.error('--test-attached-update-usb requires an installed --disk')
     if args.test_install_ui and (args.mode!='live' or args.keep_open or args.test_display):
         parser.error('--test-install-ui requires a disposable live acceptance run')
     if args.test_update_ui and (args.mode!='live' or not args.companion_disk or not args.usb_storage or args.test_install_ui or args.keep_open or args.test_display or args.test_profiles):
@@ -858,7 +896,7 @@ def main():
         elif not safe_file(disk).is_file():
             raise FileNotFoundError("Use --disk with the previously installed virtual disk")
         if args.test_ipega:
-            ipega=FakeIpega(directory);args.ipega_evdev=ipega.path
+            ipega=FakeIpega(directory);args.ipega_evdev=ipega.path;args.ipega_collections=ipega.paths
         vm = VM(directory, args, disk, install=args.mode == "install", media=args.mode == "live")
         summary.update(vm.metadata)
         if args.mode == "install":
@@ -992,7 +1030,10 @@ def main():
             if args.test_ipega:
                 position=len(vm.log.read_text(errors='replace'))
                 ipega.press('right');vm.wait_for('action=1 tile=2',10,after=position)
-                ipega.press('left');ipega.press('left')
+                ipega.send('abs',0,-26000);time.sleep(.15);ipega.send('abs',0,0)
+                vm.wait_for('action=0 tile=1',10,after=position)
+                summary['checks']['ipega_home_analog_stick_navigation']='PASS'
+                ipega.press('left')
                 vm.screenshot('ipega-home.png')
                 summary['checks']['ipega_home_controller_navigation']='PASS'
                 # Restore the same tile expected by the ordinary acceptance.
@@ -1087,6 +1128,15 @@ def main():
                 vm.wait_for('SURFACE_HOME_FOCUS_READY',10,after=start)
                 vm.key('esc')
                 summary['checks']['ipega_graphical_mapper_launch_and_controller_return']='PASS'
+                # Exercise the shipped release-check page and capture its result.
+                vm.key('esc');vm.key('tab');vm.key('ret');time.sleep(1)
+                vm.key('up');vm.key('ret');time.sleep(1)
+                vm.key('ret');time.sleep(25)
+                vm.screenshot('github-updates.png')
+                vm.key('esc');vm.key('esc')
+            if args.test_attached_update_usb:
+                summary['attached_update_usb']=exercise_attached_update_usb(vm,image,args.expect_library_games or None)
+                summary['checks']['late_usb_detected_running_internal_disk_protected']='PASS'
             if args.test_update_ui:
                 summary['ui_updated_disk']=exercise_update_ui(vm)
                 summary['update_byte_comparison']=verify_updated_disk(directory,args.companion_disk,

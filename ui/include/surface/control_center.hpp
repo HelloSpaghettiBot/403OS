@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace surface {
-enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows, Display, Profiles };
+enum class PanelKind { Settings, Network, Bluetooth, Tailscale, Moonlight, Install, PokeMMO, Library, DW3, Windows, Display, Profiles, Updates };
 struct ProfileIdentity {
     std::string name,home,state;
     unsigned uid=0,gid=0;

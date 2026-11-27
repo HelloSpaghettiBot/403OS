@@ -1,0 +1,14 @@
+#!/bin/sh
+case "$1" in
+start)
+    test -f /etc/surface-image-id || exit 1
+    start-stop-daemon -S -b -m -p /run/surface-update-check.pid \
+        -x /usr/sbin/surface-update-check -- --daemon
+    ;;
+stop)
+    start-stop-daemon -K -p /run/surface-update-check.pid
+    rm -f /run/surface-update-check.pid
+    ;;
+restart) "$0" stop; "$0" start ;;
+esac
+exit 0

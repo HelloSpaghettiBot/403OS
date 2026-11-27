@@ -1,4 +1,5 @@
 import fnmatch
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / 'external/board/surface-go1/users.txt'
 RULE = ROOT / 'external/board/surface-go1/overlay/etc/udev/rules.d/72-surface-gamepad.rules'
+
+
+spec = importlib.util.spec_from_file_location("controller_classify", ROOT / "services/controller-classify.py")
+classifier = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(classifier)
 
 
 def controller_rule(event):
@@ -31,7 +37,13 @@ def controller_rule(event):
             pairs.append(match.groups())
         if all((fnmatch.fnmatchcase(properties.get(key, ''), value) == (op == '=='))
                for key, op, value in pairs if op != '='):
-            selected.update((key, value) for key, op, value in pairs if op == '=')
+            for key, op, value in pairs:
+                if key == 'IMPORT{program}' and op == '=':
+                    assert value == '/usr/sbin/surface-controller-classify %k'
+                    props = classifier.classify(event.get('keys', 0), event.get('axes', 0))
+                    selected.update(('ENV{' + name + '}', value) for name, value in props.items())
+                    properties.update(selected)
+            selected.update((key, value) for key, op, value in pairs if op == '=' and key != 'IMPORT{program}')
             properties.update((key, value) for key, op, value in pairs if op == '=')
     return selected
 
@@ -56,11 +68,24 @@ class ControllerPermissionsTests(unittest.TestCase):
                     event = self.event(**{
                         'ENV{ID_INPUT_JOYSTICK}': joystick,
                         'ENV{ID_INPUT_KEYBOARD}': '1',
-                        'ATTRS{id/vendor}': '1949', **extra,
+                        'ATTRS{id/vendor}': '1949', 'keys': 1 << 0x130, 'axes': 3, **extra,
                     })
                     self.assertEqual(controller_rule(event), {
-                        'ENV{ID_INPUT_JOYSTICK}': '1', 'ENV{ID_INPUT_KEYBOARD}': '0',
+                        'ENV{ID_INPUT_JOYSTICK}': '1', 'ENV{ID_INPUT_KEYBOARD}': '0', 'ENV{ID_INPUT_MOUSE}': '0',
                         'GROUP': 'gamepad', 'MODE': '0660'})
+
+    def test_composite_keyboard_and_mouse_never_take_a_player_slot(self):
+        for keys, axes in ((sum(1 << n for n in range(1, 100)), 0), (1 << 0x110, 0)):
+            for kernel in ('event22', 'js1'):
+                result = controller_rule(self.event(kernel, **{'ATTRS{id/vendor}': '1949',
+                    'ENV{ID_INPUT_KEYBOARD}': '1', 'keys': keys, 'axes': axes}))
+                self.assertEqual(result, {'ENV{ID_INPUT_JOYSTICK}': '0'})
+
+    def test_capability_word_order(self):
+        self.assertEqual(classifier.bitmap('1 0000000000000002'), (1 << 64) | 2)
+        self.assertEqual(classifier.bitmap('0'), 0)
+        with self.assertRaises(ValueError):
+            classifier.bitmap('not-hex')
 
     def test_non_ipega_keyboard_does_not_gain_gamepad_access(self):
         event = self.event(**{'ENV{ID_INPUT_JOYSTICK}': '',

@@ -1,37 +1,40 @@
 # Status — November 26, 2026
 
-403 OS is a development preview. Controller input now includes automatic iPega
-D-input defaults and correct permissions for mixed keyboard/gamepad HID events.
-Personal mappings load after the system defaults.
+403 OS is a development preview. The current revision classifies separate
+iPega keyboard, mouse and gamepad interfaces by their actual capabilities and
+adds HOME left-stick navigation. Physical iPega HOME/gameplay acceptance remains
+pending; the earlier physical report was still failing.
+
+The storage screen opens in update mode. It identifies a running internal disk
+and explains how to boot the USB, instead of presenting it as a missing target.
+Source discovery recognizes ext4 installer USBs inserted after startup. A
+system-only update can preserve DATA with a pending internal ext4 journal;
+it does not mount, resize or write DATA, and filesystem error flags remain a
+refusal. Fresh-install growth retains its strict clean-filesystem requirements.
+
+Settings also checks GitHub for stable releases, after startup, daily and on
+request. Checks do not install software. No downloadable stable release has
+been published; installation of updates continues to use the live USB.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `61ec0c6ca26fe1a24190307d52af9775cd4a7bed9a936e6d3b45b61036ba771b` |
-| Pristine internal-install image | `a6b6a488bce5f9ecba806a54ba1d581c211403355901027e07538a02edcf7d9d` |
+| Public live USB | `44b486340364fcef8769a1b21427ed13da9063ade2dc3a9c74178e9af7c418f3` |
+| Pristine internal-install image | `72dafbc2f3f4d576ce33d2b3a76b132b44d6eeb754748877acf18a7b31944fa5` |
 
-Both images are 6,510,628,864 logical bytes. The exact public live image passed
-UEFI VM acceptance in `20261126-080750-live`, including the complete embedded
-installer checksum, HOME input, all eleven emulator runtime probes, real NES
-input/SRAM, application checks, networking, audio and clean GUI power-off.
-Overall status is PARTIAL for physical hardware, enrolled streaming, persistence
-across further boots and interrupted-update recovery.
+Both images are 6,510,628,864 logical bytes. Packaging verified the complete
+embedded installation payload. The current-image UEFI run passed simulated
+controller input and the graphical update. Independent complete reads verified
+that all installed DATA and GPT bytes stayed unchanged, and the replacement
+EFI/root bytes matched the payload. The updated SATA system cold-booted with
+its existing password and library, detected an installer USB inserted after
+HOME, displayed its running internal drive, and shut down cleanly.
 
-The controller regression was reproduced using a synthetic Bluetooth-bus iPega
-HID with both keyboard and joystick capabilities. With the previous device rule,
-the gaming user could not enumerate it in SDL. With the packaged rule, the same
-device opened without administrator privileges, had a complete default gamepad
-profile, appeared in the actual mapper, and supplied its raw button capture.
-Its button input changed a real FCEUmm core framebuffer without the frontend's
-`--test-input` override. The same device navigated HOME and returned from the
-graphical mapper using B.
-
-These checks verify the kernel-input-to-application path after HID creation.
-They do not emulate radio pairing, establish physical Surface/iPega operation,
-or verify every game. The shared libretro input path and Dolphin's existing SDL
-defaults remain available; individual games and Windows gameplay require their
-own acceptance. The completed source checks comprise 435 main Python tests,
-four additional VM-scope tests, 27 application tests and eight native test
-executables. See [VM results](VM_TEST_REPORT.md) and [controllers](BLUETOOTH.md).
+Source validation: 463 main Python tests completed with 23 environment-dependent
+skips; the 23 updater tests also passed after the final journal regression fix.
+All nine compiled native test programs and 49 VM-harness tests passed.
+The prior revision also passed 27 application setup tests. See
+[VM results](VM_TEST_REPORT.md) and [controllers](BLUETOOTH.md) for the distinction
+between simulated input and physical Bluetooth acceptance.
 
 ## Earlier pairing and power corrections
 
@@ -68,16 +71,15 @@ Settings now labels controller setup as **Controllers and button mapping**.
 Its SDL device list polls for hotplug, offers manual refresh, and labels detected
 inputs as connected/mapped or connected/unmapped. If Bluetooth reports a link
 without SDL input, the screen gives a gamepad-mode recovery hint. The focused
-virtual-controller mapping test passed in the Buildroot runtime. The newly
-packaged image has not been booted; physical Surface controller detection and
+virtual-controller mapping test passed in the Buildroot runtime. Physical Surface controller detection and
 button mapping remain unverified.
 
-The iPega rule now handles keyboard-only and mixed keyboard/joystick tagging,
+The earlier iPega rule handled keyboard-only and mixed keyboard/joystick tagging,
 including generic names and product variants from the same vendor. The mapper
 uses a friendly iPega name when the HID identity is known. Physical pairing and
 button mapping on the Surface still need confirmation.
 
-Current-image UEFI run `20261121-225552-live` passed all implemented runtime
+Earlier-image UEFI run `20261121-225552-live` passed all implemented runtime
 checks, including a power-button suspend/wake cycle, existing-password login, the
 28-game library and covers,
 eleven emulator engines, NES input/SRAM, browser/global return, live rotation,

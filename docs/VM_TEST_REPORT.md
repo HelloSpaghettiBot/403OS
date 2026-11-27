@@ -1,8 +1,55 @@
 # VM test report
 
+## November 26: controller and update follow-up
+
+UEFI run `20261126-143828-live` tested the current image with a disposable
+64 GiB SATA installation attached. All executed checks passed. The graphical
+updater detected the installed disk, defaulted its review to Cancel, verified
+the source, created and verified an EFI/root recovery copy, replaced and read
+back both system partitions, and shut down cleanly.
+
+An independent offline comparison read every byte of both virtual disks:
+1,048,576 bytes of prefix/GPT and 66,503,835,648 bytes of DATA plus backup GPT
+were unchanged. The new 2,214,592,512 bytes of EFI/root exactly matched the
+pristine installation payload. The test deliberately retained a pending DATA
+journal; system replacement neither mounted nor modified that filesystem.
+
+Detached UEFI run `20261126-181352-test` then booted an overlay of that
+updated SATA system. The existing root password authenticated without another
+setup prompt; the 28-game fixture library and covers loaded. Attaching the
+installer USB after HOME produced a valid source while the disk list identified
+the running internal disk and prevented writes to it. The visible page gave
+USB-boot instructions, and the GUI powered the VM off cleanly.
+
+The insertion harness waits for the automatic catalog refresh before navigating
+HOME: rebuilding the current library model resets focus. Retaining focus across
+library refresh is a remaining usability improvement. Earlier insertion runs
+reached login/library/discovery successfully but failed their automated shutdown
+sequence; those incomplete runs are not reported as complete acceptance.
+
+The revised iPega fixture exposed separate keyboard and mouse collections
+alongside the gamepad. Guest udev excluded both sibling collections from the
+gamepad list. The unprivileged SDL mapper opened the actual gamepad with its
+default profile and captured real evdev button input. A real NES core received
+that input, HOME responded to D-pad and analog-stick navigation, and the
+shipped graphical mapper opened and returned with the controller B button.
+This tests the guest HID/input path, not Bluetooth radio pairing.
+
+The run also passed all eleven emulator probes, NES SRAM/reload, browser and
+global HOME return, networking, live rotation, non-silent audio, BlueZ service,
+client output, transport, crypto and local socket checks. Its overall status
+is PARTIAL for explicitly untested physical hardware, recovery and enrolled
+streaming. Physical iPega behavior was previously reported failing and remains
+pending confirmation on the Surface.
+
+Source validation completed 463 main Python tests with 23 environment-dependent
+skips, followed by 23 passing updater tests including the new execution-stage
+journal regression. All nine native test programs and 49 VM-harness tests
+passed. The prior revision also passed 27 application setup tests.
+
 ## November 26: default controller input
 
-UEFI run `20261126-080750-live` used the exact public image listed below,
+UEFI run `20261126-080750-live` used the preceding public image,
 OVMF/KVM, four virtual CPUs, 4 GiB RAM and a 1800×1200 virtio framebuffer.
 The run completed with no failed implemented checks; overall status is PARTIAL
 for the explicitly untested physical hardware, additional boots, recovery and
@@ -59,13 +106,14 @@ suspend the host. Source checks do not establish Surface sleep or pairing.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Public live USB | `61ec0c6ca26fe1a24190307d52af9775cd4a7bed9a936e6d3b45b61036ba771b` |
-| Pristine installation payload | `a6b6a488bce5f9ecba806a54ba1d581c211403355901027e07538a02edcf7d9d` |
+| Public live USB | `44b486340364fcef8769a1b21427ed13da9063ade2dc3a9c74178e9af7c418f3` |
+| Pristine installation payload | `72dafbc2f3f4d576ce33d2b3a76b132b44d6eeb754748877acf18a7b31944fa5` |
 
 Both are 6,510,628,864 logical bytes. Packaging passed complete embedded
 payload readback, root ownership, mode 0444 and absence of a recursive payload.
-The exact outer image completed the November 26 UEFI run above. Earlier runs
-retain their original hashes and apply only to their recorded revisions.
+Current-image live runtime and complete update byte comparison passed as
+described above. Earlier runs retain their original hashes and apply only to
+their recorded revisions.
 
 ## Previous verified revision: live boot
 

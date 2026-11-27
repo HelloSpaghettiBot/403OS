@@ -189,6 +189,15 @@ def ipega_check(run):
         properties=reclassify('corrected')
     if properties.get('ID_INPUT_JOYSTICK')!='1' or properties.get('ID_INPUT_KEYBOARD')!='0':
         raise RuntimeError('The packaged correction did not reclassify the mixed-mode controller')
+    siblings=[entry for entry in Path('/sys/class/input').glob('event*')
+              if (entry/'device/name').read_text().strip() in
+              ('ipega Extending Game Controller Keyboard','ipega Extending Game Controller Mouse')]
+    if len(siblings)!=2:raise RuntimeError('Composite iPega fixture is missing its keyboard/mouse collections')
+    for entry in siblings:
+        detail=subprocess.check_output(['udevadm','info','--query=property','--path='+str(entry)],text=True,timeout=5)
+        props=dict(line.split('=',1) for line in detail.splitlines() if '=' in line)
+        if props.get('ID_INPUT_JOYSTICK')!='0':raise RuntimeError('A non-gamepad collection can take player one')
+    emit('SURFACE_IPEGA_COMPOSITE_PASS',ignored_collections=len(siblings))
     emit('SURFACE_IPEGA_PROBE_READY')
     code,output=command(['/usr/bin/surface-controller-setup','--vm-ipega-probe'],
                         run/'ipega-sdl-probe.log',timeout=15,env=environment,tail=True,user='gaming')

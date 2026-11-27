@@ -21,6 +21,7 @@ import uuid
 import zlib
 
 MARKER = Path('/etc/surface-image-id')
+SOURCE_MOUNTS = Path('/run/surface-installer')
 SYS_BLOCK = Path('/sys/class/block')
 DEV_ROOT = Path('/dev')
 MINIMUM_TARGET = 60_000_000_000
@@ -241,7 +242,8 @@ def disk_info(name, mountinfo, swaps='', sys_block=SYS_BLOCK, dev_root=DEV_ROOT,
                         mountinfo, swaps, '', '', sys_block=sys_block, dev_root=dev_root)
         except (OSError, Refused) as error:
             reasons.append(str(error))
-    if rootdev in devnums or devnums.intersection(boot_devnums or set()):
+    running_system = bool(rootdev in devnums or devnums.intersection(boot_devnums or set()))
+    if running_system:
         reasons.append('disk contains the running boot filesystem')
     if points:
         reasons.append('disk or a descendant is mounted: ' + ', '.join(points))
@@ -261,7 +263,7 @@ def disk_info(name, mountinfo, swaps='', sys_block=SYS_BLOCK, dev_root=DEV_ROOT,
     return dict(device=str(dev_root / name), name=name, model=model[:160],
                 stable_id=stable, bytes=size, logical_sector=logical,
                 devnum=text(entry / 'dev'), family_devnums=sorted(devnums),
-                usb=usb, removable=removable, mounts=points,
+                usb=usb, removable=removable, mounts=points, running_system=running_system,
                 eligible=not reasons, reasons=reasons, reason='; '.join(reasons))
 
 
@@ -429,11 +431,14 @@ def discover_sources(disks):
             try:
                 validate_target_node(device, whole_disk=False)
                 probe = command(['blkid', '-p', '-o', 'export', str(device)], 8)
-                if 'TYPE=ntfs\n' not in probe + '\n':
+                fields = dict(line.split('=', 1) for line in probe.splitlines() if '=' in line)
+                driver = {'ntfs': 'ntfs3', 'ext4': 'ext4', 'vfat': 'vfat', 'exfat': 'exfat'}.get(fields.get('TYPE'))
+                if not driver:
                     continue
-                mountpoint = Path('/run/surface-installer') / ('source-' + name)
+                mountpoint = SOURCE_MOUNTS / ('source-' + name)
                 mountpoint.mkdir(parents=True, exist_ok=True, mode=0o700)
-                command(['mount', '-t', 'ntfs3', '-o', 'ro,nosuid,nodev,noexec', str(device), str(mountpoint)])
+                options = 'ro,nosuid,nodev,noexec' + (',noload' if driver == 'ext4' else '')
+                command(['mount', '-t', driver, '-o', options, str(device), str(mountpoint)])
                 if not inspect_mount(mountpoint):
                     command(['umount', str(mountpoint)])
                     mountpoint.rmdir()

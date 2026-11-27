@@ -68,6 +68,13 @@ remain untouched. Updates have a separate Cancel-default review and explicit
 target confirmation. Recovery from a retained verified system backup is an
 explicit administrator action; this is not an atomic A/B or network updater.
 
+Installed systems check the public GitHub stable-release API after startup
+and daily, with bounded requests and retries. Settings exposes an explicit
+check and release link. These read-only checks do not install software; the
+offline updater remains the installation path. Build identity comes from
+`config/os-version.json`; release tags use `vMAJOR.MINOR.PATCH` and the matching
+asset is `403os-surface-go1-x86_64.img.xz`, with a GitHub SHA-256 asset digest.
+
 ## Engineering and acceptance
 
 Use pinned upstream sources, hashes and licenses, a Buildroot br2-external

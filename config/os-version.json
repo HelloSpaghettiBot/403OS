@@ -1,0 +1,6 @@
+{
+  "schema": "403os-version-v1",
+  "version": "0.1.0-dev",
+  "target": "surface-go1-x86_64",
+  "channel": "stable"
+}

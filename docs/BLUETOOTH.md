@@ -38,18 +38,20 @@ D-input profile for iPega VID/PID `1949:0402`. Personal mappings load after the
 system defaults. Dolphin uses its SDL gamepad defaults when creating a new
 controller configuration; existing custom configurations are retained.
 
-Mixed iPega HID interfaces can carry both `ID_INPUT_KEYBOARD=1` and
-`ID_INPUT_JOYSTICK=1`. The device rule clears the keyboard tag for iPega input
-and grants the `gamepad` group access. Previously, a condition excluded that
-mixed classification, so unprivileged applications could not open the node.
+An iPega controller can expose separate keyboard, mouse and gamepad interfaces.
+403 OS checks each interface's actual buttons and axes. Keyboard/mouse-only
+interfaces stay out of the gamepad list; the interface with game controls gets
+`gamepad` group access, including mixed keyboard/gamepad reports. HOME accepts
+both the D-pad and left analog stick, with a dead zone to prevent drift.
 
 The optional `scripts/vm.py live --test-ipega` acceptance test creates a host
 uinput device with a Bluetooth bus identity, iPega VID/PID, a keyboard-style
-name, gamepad controls and keyboard capabilities. QEMU forwards its real evdev
+name, gamepad controls and keyboard capabilities, plus separate keyboard and
+mouse collections. QEMU forwards their real evdev
 identity and events into the guest. The test first requires failure with the
 previous rule, restores the packaged rule, then checks unprivileged SDL open,
 the default profile, the actual mapper and input received by a real NES core.
-HOME navigation is driven by that same input device. This exercises the path
+HOME D-pad and analog-stick navigation are driven by that same input device. This exercises the path
 after Bluetooth HID creation; it does not emulate over-the-air pairing or
 establish compatibility with every physical controller or game.
 
